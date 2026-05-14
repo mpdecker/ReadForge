@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ReadForge</string>
+    <string name="library_title">Library</string>
+    <string name="library_empty_message">No documents yet. Tap Import to add a PDF.</string>
+    <string name="library_document_subtitle">PDF on this device</string>
+    <string name="import_short">Import</string>
+    <string name="import_wrong_type">That file is not a PDF.</string>
+    <string name="import_read_failed">Could not read the file. Try again or pick another document.</string>
+    <string name="import_unknown_error">Import failed.</string>
+    <string name="player_title">Player</string>
+    <string name="document_missing">This document is no longer in your library.</string>
+    <string name="open_player">Open player</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_placeholder">Voice, speed, and privacy options will live here.</string>
+    <string name="navigate_up">Back</string>
+    <string name="pipeline_summary">%1$d pages · %2$d raw characters · %3$d cleaned characters · %4$d sections</string>
+    <string name="sections_heading">Sections</string>
+    <string name="extract_preview_cleaned_heading">Cleaned text preview</string>
+    <string name="extract_empty_text">No text was found on the pages (image-only or protected content).</string>
+    <string name="needs_ocr_message">This PDF has very little selectable text (under 50 characters per page on average). It may be scanned. OCR will be added in a later slice — playback is not available yet.</string>
+    <string name="extract_cannot_open">The PDF could not be opened.</string>
+    <string name="extract_password_protected">Password-protected PDFs are not supported yet.</string>
+    <string name="extract_no_pages">This PDF has no readable pages.</string>
+    <string name="extract_unknown_error">Text extraction failed.</string>
+    <string name="playback_heading">Listen</string>
+    <string name="playback_position">Utterance %1$d of %2$d</string>
+    <string name="playback_no_chunks">No readable utterances for speech (try a text-based PDF).</string>
+    <string name="playback_pause_hint">Pause stops the current line; Play resumes from the start of the same utterance.</string>
+    <string name="playback_background_hint">You can return to the library while listening; use the notification or come back here to pause or stop.</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="stop">Stop</string>
+    <string name="skip_previous">Previous utterance</string>
+    <string name="skip_next">Next utterance</string>
+    <string name="notification_channel_playback_name">Playback</string>
+    <string name="notification_channel_playback_description">Media controls while ReadForge is reading aloud.</string>
+    <string name="notification_position">Utterance %1$d of %2$d</string>
+</resources>

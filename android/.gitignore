@@ -1,0 +1,22 @@
+# Local machine (Android Studio / CLI); never commit secrets here
+local.properties
+
+build/
+**/build/
+
+# Android Studio / IDEA
+.idea/
+*.iml
+local.properties
+captures/
+.navigation/
+
+# Keystores (never commit real secrets)
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+
+# Kotlin
+.kotlin/
