@@ -11,7 +11,18 @@ enum DocumentFormat: String, Sendable, CaseIterable {
 
     /// Derive format from a URL's path extension.
     init?(url: URL) {
-        switch url.pathExtension.lowercased() {
+        var ext = url.pathExtension.lowercased()
+        // `URL.pathExtension` treats a filename that's *only* a leading dot + extension
+        // (e.g. ".pdf") as a hidden file with no extension, per Foundation's usual
+        // dotfile convention. Fall back to reading past the leading dot ourselves so a
+        // file literally named ".pdf" is still recognized.
+        if ext.isEmpty {
+            let name = url.lastPathComponent
+            if name.hasPrefix("."), !name.dropFirst().isEmpty, !name.dropFirst().contains(".") {
+                ext = name.dropFirst().lowercased()
+            }
+        }
+        switch ext {
         case "pdf":          self = .pdf
         case "epub":         self = .epub
         case "txt", "text":  self = .txt

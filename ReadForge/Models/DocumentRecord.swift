@@ -6,6 +6,7 @@ enum ProcessingStatus: String, CaseIterable, Codable {
     case extracting
     case cleaning
     case ready
+    case performingOCR
     case needsOCR
     case failed
 }

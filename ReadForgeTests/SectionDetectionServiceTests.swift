@@ -23,7 +23,12 @@ struct SectionDetectionServiceTests {
     }
 
     @Test func tooManyWordsIsNotHeading() {
-        #expect(!svc.isHeading("The Quick Brown Fox Jumps Over The Lazy Dog Today"))
+        // 11 words — one past the documented ≤10-word limit.
+        #expect(!svc.isHeading("The Quick Brown Fox Jumps Over The Very Lazy Dog Today"))
+    }
+
+    @Test func exactlyTenWordsIsHeading() {
+        #expect(svc.isHeading("The Quick Brown Fox Jumps Over The Lazy Dog Today"))
     }
 
     @Test func tooShortIsNotHeading() {
@@ -41,12 +46,12 @@ struct SectionDetectionServiceTests {
     // MARK: - detect with empty input
 
     @Test func emptyPagesReturnsEmpty() {
-        let result = svc.detect(pages: [], outlineEntries: [], cleanedText: "")
+        let result = svc.detect(pages: [], outlineEntries: [], cleanedPages: [])
         #expect(result.isEmpty)
     }
 
     @Test func emptyCleanedTextReturnsEmpty() {
-        let result = svc.detect(pages: [], outlineEntries: [], cleanedText: "   ")
+        let result = svc.detect(pages: [], outlineEntries: [], cleanedPages: [PageText(pageNumber: 1, text: "   ")])
         #expect(result.isEmpty)
     }
 
@@ -59,7 +64,7 @@ struct SectionDetectionServiceTests {
             (title: "Chapter One", pageIndex: 2),
             (title: "Conclusion", pageIndex: 4)
         ]
-        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedText: "")
+        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedPages: pages)
         #expect(result.count == 3)
         #expect(result[0].title == "Introduction")
         #expect(result[1].title == "Chapter One")
@@ -73,7 +78,7 @@ struct SectionDetectionServiceTests {
             (title: "Chapter Two", pageIndex: 2),
             (title: "Chapter One", pageIndex: 0)
         ]
-        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedText: "")
+        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedPages: pages)
         #expect(result[0].title == "Chapter One")
         #expect(result[1].title == "Chapter Two")
     }
@@ -84,7 +89,7 @@ struct SectionDetectionServiceTests {
             (title: "Valid", pageIndex: 0),
             (title: "Invalid", pageIndex: 99)  // out of bounds
         ]
-        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedText: "")
+        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedPages: pages)
         #expect(result.count == 1)
         #expect(result[0].title == "Valid")
     }
@@ -92,7 +97,7 @@ struct SectionDetectionServiceTests {
     @Test func sectionEndPageClamped() {
         let pages = (1...3).map { PageText(pageNumber: $0, text: "Page \($0)") }
         let outline: [(title: String, pageIndex: Int)] = [(title: "Only", pageIndex: 0)]
-        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedText: "")
+        let result = svc.detect(pages: pages, outlineEntries: outline, cleanedPages: pages)
         #expect(result.count == 1)
         // End page should be clamped to last page (index 2 → page 3)
         #expect(result[0].endPage == 3)
@@ -102,13 +107,13 @@ struct SectionDetectionServiceTests {
 
     @Test func heuristicFallbackProducesAtLeastOneSection() {
         let text = Array(repeating: "This is a body paragraph with enough words.", count: 50).joined(separator: "\n\n")
-        let result = svc.detect(pages: [], outlineEntries: [], cleanedText: text)
+        let result = svc.detect(pages: [], outlineEntries: [], cleanedPages: [PageText(pageNumber: 1, text: text)])
         #expect(!result.isEmpty)
     }
 
     @Test func heuristicHeadingBecomesTitle() {
         let text = "INTRODUCTION\n\n" + Array(repeating: "Body text here.", count: 20).joined(separator: " ")
-        let result = svc.detect(pages: [], outlineEntries: [], cleanedText: text)
+        let result = svc.detect(pages: [], outlineEntries: [], cleanedPages: [PageText(pageNumber: 1, text: text)])
         #expect(result.first?.title == "INTRODUCTION")
     }
 
@@ -120,7 +125,7 @@ struct SectionDetectionServiceTests {
             chunks.append(Array(repeating: "word", count: 3_100).joined(separator: " "))
         }
         let text = chunks.joined(separator: "\n\n")
-        let result = svc.detect(pages: [], outlineEntries: [], cleanedText: text)
+        let result = svc.detect(pages: [], outlineEntries: [], cleanedPages: [PageText(pageNumber: 1, text: text)])
         for (i, section) in result.enumerated() {
             #expect(section.order == i)
         }

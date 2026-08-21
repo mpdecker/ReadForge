@@ -98,8 +98,10 @@ actor ServiceContainer {
             return EPUBExtractionService() as? T
         case is PlainTextExtractionService.Type:
             return PlainTextExtractionService() as? T
-        case is SpeechService.Type:
-            return NativeSpeechService() as? T
+        case is TieredTextCleanupService.Type:
+            return TieredTextCleanupService() as? T
+        case is OCRService.Type:
+            return OCRService() as? T
         case is PlaybackController.Type:
             return await MainActor.run { PlaybackController() as? T }
         case is SimplePerformanceCoordinator.Type:
@@ -161,11 +163,26 @@ extension ServiceContainer {
     var sectionDetectionService: SectionDetectionService {
         get async throws { try await resolve(SectionDetectionService.self) }
     }
-    
-    var speechService: SpeechService {
-        get async throws { try await resolve(SpeechService.self) }
+
+    // Resolved by the CONCRETE type (`TieredTextCleanupService`), not the `AIModelManaging`
+    // protocol — `switch type { case is AIModelManaging.Type: ... }` inside
+    // `createDefaultInstance<T>` never matches when `T` is bound to the protocol itself
+    // (confirmed: Swift's `is` pattern match on a generic `T.Type` value doesn't satisfy a
+    // protocol-metatype case the way it does for a concrete type). That silently made every
+    // call here throw `.serviceNotFound`, swallowed by the `try?` at the call site, so the
+    // "Enhanced Cleanup" toggle in Settings had zero effect no matter what the user chose.
+    //
+    // `TieredTextCleanupService` itself prefers Apple's on-device Foundation Model (a real
+    // generative LLM, iOS 26+ on eligible hardware) and falls back to `TextCleanupAIService`'s
+    // NaturalLanguage-based pass everywhere else — see that type's doc comment.
+    var aiCleanupService: AIModelManaging {
+        get async throws { try await resolve(TieredTextCleanupService.self) }
     }
-    
+
+    var ocrService: OCRService {
+        get async throws { try await resolve(OCRService.self) }
+    }
+
     var performanceCoordinator: SimplePerformanceCoordinator {
         get async throws { try await resolve(SimplePerformanceCoordinator.self) }
     }

@@ -37,11 +37,7 @@ struct LibraryView: View {
             ) { result in
                 viewModel.handleImport(result, context: modelContext)
             }
-            .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
-                Button("OK") { viewModel.errorMessage = nil }
-            } message: {
-                Text(viewModel.errorMessage ?? "")
-            }
+            .errorAlert($viewModel.errorMessage)
         }
     }
 }

@@ -21,7 +21,7 @@ protocol TextCleaningService {
 
 /// Protocol for section detection services
 protocol SectionDetectionService {
-    func detect(pages: [PageText], outlineEntries: [(title: String, pageIndex: Int)], cleanedText: String) -> [SectionData]
+    func detect(pages: [PageText], outlineEntries: [(title: String, pageIndex: Int)], cleanedPages: [PageText]) -> [SectionData]
 }
 
 /// Protocol for document import services
@@ -44,13 +44,6 @@ protocol PlaybackService {
     func stop()
     func skipBack()
     func skipForward()
-}
-
-/// Protocol for speech services
-protocol SpeechService {
-    func speak(_ text: String, rate: Float) async throws
-    func stop()
-    var isSpeaking: Bool { get }
 }
 
 /// Protocol for AI model management

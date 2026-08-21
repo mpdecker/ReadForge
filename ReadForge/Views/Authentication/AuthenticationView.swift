@@ -10,7 +10,12 @@ import Combine
 
 /// Main authentication coordinator view
 struct AuthenticationView: View {
-    @StateObject private var authService = AuthenticationService()
+    // Sourced from the environment (injected once, at the app root) rather than owned here.
+    // Owning a separate `@StateObject` — the previous version did, via the in-memory-only
+    // `AuthenticationService()` convenience initializer — meant sign-in/sign-up here mutated a
+    // throwaway instance that `AuthenticationEntryView` never observed, so a successful sign-in
+    // would never actually dismiss this screen.
+    @EnvironmentObject private var authService: AuthenticationService
     @State private var currentTab: AuthTab = .signIn
     
     enum AuthTab: String, CaseIterable {
@@ -62,7 +67,6 @@ struct AuthenticationView: View {
             )
         )
         .ignoresSafeArea(.keyboard)
-        .environmentObject(authService)
     }
     
     // MARK: - Welcome Section (iPad only)

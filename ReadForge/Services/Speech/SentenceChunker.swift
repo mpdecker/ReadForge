@@ -6,15 +6,21 @@ struct SentenceChunker {
     private let maxLength = 800
 
     func chunk(_ text: String) -> [String] {
+        merge(Self.sentences(in: text))
+    }
+
+    /// Raw, un-merged sentence boundaries — used directly by callers (e.g.
+    /// `SummarizationService`) that need individual sentences rather than TTS-sized chunks.
+    static func sentences(in text: String) -> [String] {
         var sentences: [String] = []
         let tokenizer = NLTokenizer(unit: .sentence)
         tokenizer.string = text
         tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            let sentence = String(text[range]).trimmingCharacters(in: .whitespaces)
+            let sentence = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
             if !sentence.isEmpty { sentences.append(sentence) }
             return true
         }
-        return merge(sentences)
+        return sentences
     }
 
     // Combine short sentences up to maxLength; split anything over maxLength at word boundaries.

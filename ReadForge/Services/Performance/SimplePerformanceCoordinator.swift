@@ -21,6 +21,7 @@ final class SimplePerformanceCoordinator {
     
     /// Start basic performance monitoring
     func startMonitoring() {
+        UIDevice.current.isBatteryMonitoringEnabled = true
         setupMemoryWarningObserver()
         ReadForgeLogger.debug(category: "Performance", message: "Performance monitoring started")
     }
@@ -34,9 +35,20 @@ final class SimplePerformanceCoordinator {
         ReadForgeLogger.debug(category: "Performance", message: "Performance monitoring stopped")
     }
     
-    /// Check if heavy operations should be allowed
+    /// Check if heavy operations (extraction, cleanup, section detection, OCR) should proceed
+    /// right now, per CLAUDE.md's "Pause AI processing when battery is low or device is hot".
     func shouldAllowHeavyOperations() -> Bool {
-        // Simple check - could be enhanced with battery/thermal monitoring if needed
+        if ProcessInfo.processInfo.thermalState == .critical || ProcessInfo.processInfo.thermalState == .serious {
+            ReadForgeLogger.performanceWarning(operation: "Heavy Operation Gate", issue: "Thermal state is \(ProcessInfo.processInfo.thermalState)")
+            return false
+        }
+        let device = UIDevice.current
+        // batteryState == .unknown on Simulator / when monitoring isn't enabled — don't block
+        // heavy work off an unreadable signal, only off a confirmed low, unplugged battery.
+        if device.batteryState == .unplugged, device.batteryLevel >= 0, device.batteryLevel < 0.2 {
+            ReadForgeLogger.performanceWarning(operation: "Heavy Operation Gate", issue: "Battery at \(Int(device.batteryLevel * 100))%, unplugged")
+            return false
+        }
         return true
     }
     

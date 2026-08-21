@@ -1,10 +1,24 @@
 import SwiftUI
 import SwiftData
 
+/// Identifies one export request — either a single chapter or the whole book — for
+/// `.sheet(item:)` to present `AudioExportView` with.
+private struct AudioExportRequest: Identifiable {
+    let id = UUID()
+    let title: String
+    let sections: [(title: String, text: String)]
+}
+
 struct DocumentDetailView: View {
     let document: DocumentRecord
     @Environment(\.modelContext) private var modelContext
     @State private var showPlayer = false
+    @State private var precachingSectionId: UUID?
+    @State private var precachedSectionIds: Set<UUID> = []
+    @State private var precacheTask: Task<Void, Never>?
+    @State private var summarySection: SectionRecord?
+    @State private var exportRequest: AudioExportRequest?
+    private let audioCache = AudioCacheService.shared
 
     private var sections: [SectionRecord] {
         document.sections.sorted { $0.order < $1.order }
@@ -20,12 +34,51 @@ struct DocumentDetailView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.large)
+        .onDisappear {
+            // Otherwise a "Download" left running when the user navigates away keeps
+            // synthesizing every remaining sentence in the background indefinitely.
+            precacheTask?.cancel()
+        }
         .navigationDestination(isPresented: $showPlayer) {
             PlayerView(document: document, modelContext: modelContext)
+        }
+        .navigationDestination(item: $summarySection) { section in
+            SectionSummaryView(section: section)
+        }
+        .sheet(item: $exportRequest) { request in
+            AudioExportView(title: request.title, sections: request.sections)
         }
         .safeAreaInset(edge: .bottom) {
             if document.processingStatus == .ready && !sections.isEmpty {
                 playBar
+            }
+        }
+        .toolbar {
+            if document.processingStatus == .ready && !sections.isEmpty {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    NavigationLink {
+                        BookmarksListView(document: document)
+                    } label: {
+                        Label("Bookmarks", systemImage: "bookmark")
+                    }
+                    NavigationLink {
+                        AskModeView(document: document)
+                    } label: {
+                        Label("Ask", systemImage: "text.magnifyingglass")
+                    }
+                    Menu {
+                        Button {
+                            exportRequest = AudioExportRequest(
+                                title: document.title,
+                                sections: sections.map { (title: $0.title, text: $0.cleanText ?? $0.rawText) }
+                            )
+                        } label: {
+                            Label("Export Entire Book", systemImage: "square.and.arrow.up")
+                        }
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                }
             }
         }
     }
@@ -63,12 +116,45 @@ struct DocumentDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if precachingSectionId == section.id {
+                        ProgressView().controlSize(.small)
+                    } else if precachedSectionIds.contains(section.id) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundStyle(.tint)
+                            .accessibilityLabel("Downloaded for offline listening")
+                    }
                     Image(systemName: "chevron.right")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { showPlayer = true }
+                .swipeActions(edge: .leading) {
+                    Button {
+                        precacheSection(section)
+                    } label: {
+                        Label("Download", systemImage: "arrow.down.circle")
+                    }
+                    .tint(.blue)
+                    .disabled(precachingSectionId != nil)
+                }
+                .swipeActions(edge: .trailing) {
+                    Button {
+                        summarySection = section
+                    } label: {
+                        Label("Summary", systemImage: "text.redaction")
+                    }
+                    .tint(.indigo)
+                    Button {
+                        exportRequest = AudioExportRequest(
+                            title: section.title,
+                            sections: [(title: section.title, text: section.cleanText ?? section.rawText)]
+                        )
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .tint(.green)
+                }
             }
         }
     }
@@ -103,11 +189,14 @@ struct DocumentDetailView: View {
         case .cleaning:
             Label("Cleaning up text…", systemImage: "arrow.trianglehead.2.clockwise")
                 .foregroundStyle(.orange)
+        case .performingOCR:
+            Label("Scanning pages (OCR)…", systemImage: "text.viewfinder")
+                .foregroundStyle(.orange)
         case .needsOCR:
             VStack(alignment: .leading, spacing: 4) {
-                Label("Scanned PDF detected", systemImage: "exclamationmark.triangle.fill")
+                Label("Couldn't read this scan", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)
-                Text("This PDF has no text layer. OCR support is coming in a future update.")
+                Text("On-device text recognition couldn't extract readable text from this PDF — the scan quality may be too low.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -134,5 +223,34 @@ struct DocumentDetailView: View {
         let words = (section.cleanText ?? section.rawText).split(separator: " ").count
         let mins = max(1, Int(Double(words) / 160))
         return "\(mins) min"
+    }
+
+    /// Pre-renders every sentence in a section into the audio cache (CLAUDE.md Phase 15) so it's
+    /// ready to play back without live synthesis — e.g. before a flight. This only populates the
+    /// cache; it doesn't change how the live player produces audio.
+    private func precacheSection(_ section: SectionRecord) {
+        precachingSectionId = section.id
+        let documentId = document.id
+        let sectionId = section.id
+        let sentences = SentenceChunker().chunk(section.cleanText ?? section.rawText)
+        // Shared with `PlayerViewModel.configure()` so a precache and live playback always
+        // derive the identical cache key — they used to read these UserDefaults keys
+        // independently, which was harmless while both hard-coded the same nil/1.0 fallback,
+        // but the live-playback side never actually got wired to Settings' choices at all, so
+        // the two silently disagreed for any user who'd picked a non-default voice/speed.
+        let (voiceId, rate) = PlaybackController.defaultVoiceAndRate()
+
+        precacheTask = Task {
+            for sentence in sentences {
+                guard !Task.isCancelled else { return }
+                let key = audioCache.cacheKey(
+                    documentId: documentId, sectionId: sectionId, voiceId: voiceId, rate: rate, text: sentence
+                )
+                _ = try? await audioCache.synthesizeAndCache(text: sentence, voiceId: voiceId, rate: rate, key: key)
+            }
+            guard !Task.isCancelled else { return }
+            precachingSectionId = nil
+            precachedSectionIds.insert(sectionId)
+        }
     }
 }

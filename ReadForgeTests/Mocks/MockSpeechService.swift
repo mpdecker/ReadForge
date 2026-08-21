@@ -22,4 +22,8 @@ final class MockSpeechService: SpeechServiceProtocol {
     func simulateFinish() {
         delegate?.speechServiceDidFinishUtterance()
     }
+
+    func simulateWillSpeak(range: NSRange, in utterance: String) {
+        delegate?.speechServiceWillSpeakRange(range, in: utterance)
+    }
 }

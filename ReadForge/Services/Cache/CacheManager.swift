@@ -193,14 +193,39 @@ final class CacheManager {
         return await retrieve(String.self, forKey: "cleaned_text_\(documentId.uuidString)")
     }
     
-    /// Cache section data
+    /// Cache section data — one `store` call per section, never the whole array in a single
+    /// JSON blob. CLAUDE.md: "Store raw and clean text per section separately. Never load a
+    /// full document into memory." The previous version JSON-encoded every section's raw+clean
+    /// text for the whole document in one `JSONEncoder().encode([SectionData])` call.
     func cacheSectionData(_ sections: [SectionData], for documentId: UUID) async {
-        await store(sections, forKey: "sections_\(documentId.uuidString)")
+        for section in sections {
+            await store(section, forKey: sectionCacheKey(documentId: documentId, order: section.order))
+        }
+        // A small index of which orders exist, so a reader can reconstruct the array without
+        // guessing a section count — itself tiny (just integers), not document text.
+        await store(sections.map(\.order), forKey: sectionIndexKey(for: documentId))
     }
-    
-    /// Get cached section data
+
+    /// Get cached section data — reads each section individually and assembles the array here;
+    /// only one section's text is ever decoded from disk/memory-cache at a time.
     func getCachedSectionData(for documentId: UUID) async -> [SectionData]? {
-        return await retrieve([SectionData].self, forKey: "sections_\(documentId.uuidString)")
+        guard let orders = await retrieve([Int].self, forKey: sectionIndexKey(for: documentId)) else { return nil }
+        var result: [SectionData] = []
+        for order in orders {
+            guard let section = await retrieve(SectionData.self, forKey: sectionCacheKey(documentId: documentId, order: order)) else {
+                return nil
+            }
+            result.append(section)
+        }
+        return result
+    }
+
+    private func sectionCacheKey(documentId: UUID, order: Int) -> String {
+        "section_\(documentId.uuidString)_\(order)"
+    }
+
+    private func sectionIndexKey(for documentId: UUID) -> String {
+        "sections_index_\(documentId.uuidString)"
     }
     
     /// Cache AI model results
