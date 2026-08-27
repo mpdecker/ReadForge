@@ -6,10 +6,10 @@
 //
 
 import SwiftUI
-import SwiftData
 
 struct SignUpView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var authService: AuthenticationService
     @State private var name = ""
     @State private var email = ""
     @State private var password = ""
@@ -46,11 +46,7 @@ struct SignUpView: View {
                     .accessibilityLabel("Cancel account creation")
                 }
             }
-            .alert("Sign Up Error", isPresented: .constant(!errorMessage.isEmpty)) {
-                Button("OK") { errorMessage = "" }
-            } message: {
-                Text(errorMessage)
-            }
+            .errorAlert($errorMessage, title: "Sign Up Error")
         }
     }
     
@@ -279,12 +275,10 @@ struct SignUpView: View {
         
         Task {
             do {
-                let config = ModelConfiguration(isStoredInMemoryOnly: true)
-                let container = try ModelContainer(
-                    for: User.self, UserPreferences.self, UserSession.self, UserDevice.self,
-                    configurations: config
-                )
-                let authService = AuthenticationService(modelContext: ModelContext(container))
+                // Register through the shared, environment-injected authService — it's backed
+                // by the app's real persistent store. The previous version built its own
+                // throwaway in-memory ModelContainer here, so every "created" account vanished
+                // immediately and the shared auth state never actually changed.
                 try await authService.register(
                     email: email,
                     password: password,

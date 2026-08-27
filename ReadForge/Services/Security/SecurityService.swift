@@ -16,28 +16,42 @@ enum SecurityService {
     
     /// Validates file paths to prevent directory traversal attacks
     static func validateFilePath(_ path: String) -> Bool {
-        // Check for directory traversal attempts
-        let dangerousPatterns = ["../", "..\\", "~", "/etc", "/var", "/usr", "/bin"]
-        
-        for pattern in dangerousPatterns {
-            if path.contains(pattern) {
-                ReadForgeLogger.securityValidationFailed(component: "FilePath", reason: "Contains dangerous pattern: \(pattern)")
-                return false
-            }
-        }
-        
         // Check for null bytes
         if path.contains("\0") {
             ReadForgeLogger.securityValidationFailed(component: "FilePath", reason: "Contains null bytes")
             return false
         }
-        
+
         // Check for extremely long paths
         if path.count > 4096 {
             ReadForgeLogger.securityValidationFailed(component: "FilePath", reason: "Path too long")
             return false
         }
-        
+
+        // Check for directory traversal as a real path component, not a substring.
+        // A substring check (e.g. for "/var") would reject perfectly ordinary sandboxed
+        // paths — on-device, the app container and any file handed over by the document
+        // picker live under /private/var/mobile/Containers/..., so importing would fail
+        // for every real user while appearing to work fine in Simulator.
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        if components.contains(where: { $0 == ".." }) {
+            ReadForgeLogger.securityValidationFailed(component: "FilePath", reason: "Contains directory traversal")
+            return false
+        }
+
+        // Defense-in-depth against a path pointing directly at a system directory — checked as
+        // an absolute-path *prefix*, not a substring. A substring check is exactly the bug the
+        // comment above describes (it also would have rejected every real sandboxed path,
+        // since e.g. "/private/etc" contains no "/etc" as a path component but would match a
+        // substring check on unrelated grounds too); a prefix check only rejects a path that
+        // literally starts at one of these roots, so a real document under
+        // /private/var/mobile/Containers/.../My Document.pdf is unaffected.
+        let systemPrefixes = ["/etc/", "/usr/", "/bin/", "/sbin/", "/private/etc/"]
+        if systemPrefixes.contains(where: path.hasPrefix) {
+            ReadForgeLogger.securityValidationFailed(component: "FilePath", reason: "Points at a system directory")
+            return false
+        }
+
         return true
     }
     
@@ -125,26 +139,34 @@ enum SecurityService {
         let keyByteCount = 32
         var derivedKey = Data(count: keyByteCount)
 
-        let result = derivedKey.withUnsafeMutableBytes { derivedKeyBytes in
-            salt.withUnsafeBytes { saltBytes in
-                CCKeyDerivationPBKDF(
-                    CCPBKDFAlgorithm(kCCPBKDF2),
-                    passwordData.withUnsafeBytes { $0.bindMemory(to: Int8.self).baseAddress },
-                    passwordData.count,
-                    saltBytes.bindMemory(to: UInt8.self).baseAddress,
-                    salt.count,
-                    CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
-                    100000, // iterations
-                    derivedKeyBytes.bindMemory(to: UInt8.self).baseAddress,
-                    keyByteCount
-                )
+        // The password pointer must be obtained *inside* the same nested `withUnsafeBytes`
+        // scope that calls CCKeyDerivationPBKDF. Getting `.baseAddress` from a separate,
+        // already-returned `passwordData.withUnsafeBytes { ... }` call (the previous version)
+        // escapes a pointer that's only guaranteed valid for that closure's duration — using it
+        // afterward is undefined behavior, and in practice made key derivation non-deterministic
+        // (the same password could derive a different key on each call).
+        let result = derivedKey.withUnsafeMutableBytes { derivedKeyBytes -> Int32 in
+            salt.withUnsafeBytes { saltBytes -> Int32 in
+                passwordData.withUnsafeBytes { passwordBytes -> Int32 in
+                    CCKeyDerivationPBKDF(
+                        CCPBKDFAlgorithm(kCCPBKDF2),
+                        passwordBytes.bindMemory(to: Int8.self).baseAddress,
+                        passwordData.count,
+                        saltBytes.bindMemory(to: UInt8.self).baseAddress,
+                        salt.count,
+                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                        100000, // iterations
+                        derivedKeyBytes.bindMemory(to: UInt8.self).baseAddress,
+                        keyByteCount
+                    )
+                }
             }
         }
-        
+
         guard result == kCCSuccess else {
             throw SecurityError.keyDerivationFailed
         }
-        
+
         return SymmetricKey(data: derivedKey)
     }
     

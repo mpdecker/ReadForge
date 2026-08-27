@@ -98,6 +98,36 @@ struct TextCleanupServiceTests {
         #expect(result.contains(header))
     }
 
+    // Regression test: repeated-line removal used to match and delete anywhere in the page's
+    // full text, not just the leading/trailing window `repeatedLines` actually sampled from — a
+    // running header that also legitimately appears as an ordinary mid-page line (e.g. reused as
+    // a section-break title) previously lost that real body content too.
+    @Test func repeatedHeaderOnlyRemovedFromLeadingTrailingWindowNotMidPage() {
+        // 6 lines/page: header at the very top and very bottom (the actual leading/trailing
+        // window `repeatedLines` samples, so this is what gets detected as boilerplate) plus the
+        // SAME text reused a third time in the middle (outside that window, e.g. a chapter title
+        // reused as a mid-chapter section break — real content, not boilerplate).
+        let header = "THE JOURNEY"
+        let pages = (1...5).map { i in
+            PageText(pageNumber: i, text:
+                "\(header)\nIntro for page \(i).\n\(header)\nBody text unique to page \(i).\nBody text after \(i).\n\(header)")
+        }
+        let result = svc.clean(pages)
+        #expect(result.contains("Intro for page"))
+        #expect(result.contains("Body text unique"))
+        // The top/bottom boilerplate occurrences are gone, but the mid-page occurrence — real
+        // content — survives exactly once.
+        #expect(result.contains(header), "A legitimate mid-page occurrence of the header text must not be stripped")
+    }
+
+    // Regression test: the hyphen-join only matched a bare "-\n", missing the common case where
+    // PDFKit's extracted justified text has a trailing space before the line break.
+    @Test func hyphenatedLineBreakWithTrailingSpaceJoined() {
+        let pages = [PageText(pageNumber: 1, text: "algo- \nrithm is fast")]
+        let result = svc.clean(pages)
+        #expect(result.contains("algorithm"))
+    }
+
     // MARK: - Paragraph preservation
 
     @Test func doubleNewlinePreservesParagraphBreak() {

@@ -58,8 +58,17 @@ struct DocumentImportService: Sendable {
             throw ImportError.fileMissing
         }
 
-        let rawName = sourceURL.deletingPathExtension().lastPathComponent
-        let title   = rawName.removingPercentEncoding ?? rawName
+        let originalName = sourceURL.lastPathComponent
+        var rawName = sourceURL.deletingPathExtension().lastPathComponent
+        // Mirror DocumentFormat's handling of a filename that's only "leading dot + extension"
+        // (e.g. ".pdf"): Foundation's `pathExtension`/`deletingPathExtension` treat that as a
+        // hidden file with no extension, so `deletingPathExtension()` is a no-op here and would
+        // otherwise leave the extension itself ("pdf") as the document's title.
+        if rawName == originalName,
+           originalName.hasPrefix("."), !originalName.dropFirst().isEmpty, !originalName.dropFirst().contains(".") {
+            rawName = ""
+        }
+        let title = rawName.removingPercentEncoding ?? rawName
         return DocumentRecord(title: title.isEmpty ? "Untitled" : title, fileURL: destURL)
     }
 

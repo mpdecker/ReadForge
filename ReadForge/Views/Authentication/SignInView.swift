@@ -15,8 +15,6 @@ struct SignInView: View {
     @State private var rememberDevice = false
     @State private var showingPasswordReset = false
     @State private var showingSignUp = false
-    @State private var showingTwoFactor = false
-    @State private var twoFactorCode = ""
     @State private var errorMessage = ""
     
     var body: some View {
@@ -36,23 +34,12 @@ struct SignInView: View {
             .padding()
             .navigationTitle("Sign In")
             .navigationBarTitleDisplayMode(.large)
-            .alert("Sign In Error", isPresented: .constant(!errorMessage.isEmpty)) {
-                Button("OK") { errorMessage = "" }
-            } message: {
-                Text(errorMessage)
-            }
+            .errorAlert($errorMessage, title: "Sign In Error")
             .sheet(isPresented: $showingPasswordReset) {
                 PasswordResetView()
             }
             .sheet(isPresented: $showingSignUp) {
                 SignUpView()
-            }
-            .sheet(isPresented: $showingTwoFactor) {
-                TwoFactorView(challengeId: "", onVerification: { code in
-                    Task {
-                        await authService.verifyTwoFactorCode(code, challengeId: "")
-                    }
-                })
             }
         }
     }
@@ -138,6 +125,7 @@ struct SignInView: View {
         Button {
             Task {
                 await authService.authenticateWithBiometrics()
+                reflectAuthenticationError()
             }
         } label: {
             HStack {
@@ -162,6 +150,7 @@ struct SignInView: View {
                     deviceName: UIDevice.current.name,
                     rememberDevice: rememberDevice
                 )
+                reflectAuthenticationError()
             }
         } label: {
             if authService.isLoading {
@@ -209,76 +198,22 @@ struct SignInView: View {
             }
         }
     }
-}
 
-// MARK: - Two Factor View
+    // MARK: - Error Reflection
 
-struct TwoFactorView: View {
-    let challengeId: String
-    let onVerification: (String) -> Void
-    
-    @State private var code = ""
-    @State private var isLoading = false
-    
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                VStack(spacing: 16) {
-                    Image(systemName: "shield.checkered")
-                        .font(.system(size: 60))
-                        .foregroundStyle(.tint)
-                    
-                    Text("Two-Factor Authentication")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                    
-                    Text("Enter the verification code sent to your device")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                
-                VStack(spacing: 16) {
-                    Text("Verification Code")
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    
-                    TextField("Enter 6-digit code", text: $code)
-                        .textContentType(.oneTimeCode)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityLabel("Verification code")
-                        .accessibilityHint("Enter the 6-digit verification code")
-                }
-                
-                Button {
-                    isLoading = true
-                    onVerification(code)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        isLoading = false
-                    }
-                } label: {
-                    if isLoading {
-                        HStack {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                            Text("Verifying...")
-                        }
-                    } else {
-                        Text("Verify")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(code.count != 6 || isLoading)
-                .accessibilityLabel("Verify code")
-                .accessibilityHint("Verify the two-factor authentication code")
-                
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Verify")
-            .navigationBarTitleDisplayMode(.large)
+    /// `signIn`/`authenticateWithBiometrics` don't throw — a failure is expressed by setting
+    /// `authenticationState` to `.error(...)`. Nothing previously read that back out into this
+    /// view's own `errorMessage`/alert, so a wrong password or a failed Face ID/Touch ID
+    /// attempt produced no visible feedback at all: the button's spinner just stopped and the
+    /// screen sat there. Called right after each `await` above.
+    private func reflectAuthenticationError() {
+        if case .error(let error) = authService.authenticationState {
+            errorMessage = error.localizedDescription
         }
     }
 }
+
+// Two-factor authentication was removed: it needs a delivery mechanism (SMS, email, or an
+// authenticator app) that a fully offline, no-backend app has no way to provide (see
+// CLAUDE.md's privacy rules and NetworkService), so the sheet here was previously unreachable
+// dead code with nothing behind it.

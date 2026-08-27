@@ -5,15 +5,21 @@
 //  Created by Matthieu Decker on 5/10/26.
 //
 
+import CryptoKit
 import Foundation
 
 /// Intelligent caching system for ReadForge
 @MainActor
 @Observable
 final class CacheManager {
-    
+
+    /// Shared instance so a single memory-pressure handler (`SimplePerformanceCoordinator`) can
+    /// actually reach the same cache that callers populate — a previous per-call-site instance
+    /// meant nothing external could ever trigger cleanup on the one actually holding data.
+    static let shared = CacheManager()
+
     // MARK: - Properties
-    
+
     private let memoryCache = NSCache<NSString, NSCacheItem>()
     private let diskCacheURL: URL
     private let fileManager = FileManager.default
@@ -193,26 +199,58 @@ final class CacheManager {
         return await retrieve(String.self, forKey: "cleaned_text_\(documentId.uuidString)")
     }
     
-    /// Cache section data
+    /// Cache section data — one `store` call per section, never the whole array in a single
+    /// JSON blob. CLAUDE.md: "Store raw and clean text per section separately. Never load a
+    /// full document into memory." The previous version JSON-encoded every section's raw+clean
+    /// text for the whole document in one `JSONEncoder().encode([SectionData])` call.
     func cacheSectionData(_ sections: [SectionData], for documentId: UUID) async {
-        await store(sections, forKey: "sections_\(documentId.uuidString)")
+        for section in sections {
+            await store(section, forKey: sectionCacheKey(documentId: documentId, order: section.order))
+        }
+        // A small index of which orders exist, so a reader can reconstruct the array without
+        // guessing a section count — itself tiny (just integers), not document text.
+        await store(sections.map(\.order), forKey: sectionIndexKey(for: documentId))
     }
-    
-    /// Get cached section data
+
+    /// Get cached section data — reads each section individually and assembles the array here;
+    /// only one section's text is ever decoded from disk/memory-cache at a time.
     func getCachedSectionData(for documentId: UUID) async -> [SectionData]? {
-        return await retrieve([SectionData].self, forKey: "sections_\(documentId.uuidString)")
+        guard let orders = await retrieve([Int].self, forKey: sectionIndexKey(for: documentId)) else { return nil }
+        var result: [SectionData] = []
+        for order in orders {
+            guard let section = await retrieve(SectionData.self, forKey: sectionCacheKey(documentId: documentId, order: order)) else {
+                return nil
+            }
+            result.append(section)
+        }
+        return result
+    }
+
+    private func sectionCacheKey(documentId: UUID, order: Int) -> String {
+        "section_\(documentId.uuidString)_\(order)"
+    }
+
+    private func sectionIndexKey(for documentId: UUID) -> String {
+        "sections_index_\(documentId.uuidString)"
     }
     
     /// Cache AI model results
     func cacheAIResult(_ result: String, for input: String) async {
-        let hash = input.hash
-        await store(result, forKey: "ai_result_\(hash)")
+        await store(result, forKey: "ai_result_\(Self.stableKey(for: input))")
     }
-    
+
     /// Get cached AI result
     func getCachedAIResult(for input: String) async -> String? {
-        let hash = input.hash
-        return await retrieve(String.self, forKey: "ai_result_\(hash)")
+        return await retrieve(String.self, forKey: "ai_result_\(Self.stableKey(for: input))")
+    }
+
+    /// `String.hash`/`.hashValue` is randomized per process launch (Swift's hash-flooding
+    /// protection) — the same `input` produced a different key every app launch, so this cache
+    /// looked persistent but actually never hit across a relaunch; every previous session's
+    /// entries just sat on disk as permanently-unreachable orphans until the 7/30-day sweep
+    /// caught them. SHA256 is stable across launches and still filename-safe.
+    private static func stableKey(for input: String) -> String {
+        SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     
     // MARK: - Private Methods
@@ -220,7 +258,10 @@ final class CacheManager {
     private func storeToDisk(_ data: Data, forKey key: String) async {
         let fileURL = diskCacheURL.appendingPathComponent(key)
         do {
-            try data.write(to: fileURL)
+            // Atomic so a crash/termination mid-write can't leave a torn file — this is a
+            // recomputable cache (a torn file just fails to decode and is treated as a miss), so
+            // the impact of the previous non-atomic write was low, but it's an easy, free fix.
+            try data.write(to: fileURL, options: .atomic)
         } catch {
             ReadForgeLogger.error(category: "Cache", message: "Failed to write to disk cache", error: error)
         }

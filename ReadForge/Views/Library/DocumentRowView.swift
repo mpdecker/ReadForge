@@ -46,8 +46,12 @@ struct DocumentRowView: View {
             Text("Cleaning…")
                 .font(.caption)
                 .foregroundStyle(.orange)
+        case .performingOCR:
+            Text("Scanning…")
+                .font(.caption)
+                .foregroundStyle(.orange)
         case .needsOCR:
-            Label("Needs OCR", systemImage: "exclamationmark.triangle.fill")
+            Label("Scan unreadable", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.yellow)
         case .failed:

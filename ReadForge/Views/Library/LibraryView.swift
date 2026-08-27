@@ -9,13 +9,13 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if documents.isEmpty && viewModel.processingDocumentId == nil {
+                if documents.isEmpty && viewModel.processingDocumentIds.isEmpty {
                     LibraryEmptyStateView { viewModel.showImporter = true }
                 } else {
                     List(documents) { doc in
                         NavigationLink(value: doc) {
                             DocumentRowView(document: doc,
-                                           isProcessing: viewModel.processingDocumentId == doc.id)
+                                           isProcessing: viewModel.processingDocumentIds.contains(doc.id))
                         }
                     }
                     .listStyle(.plain)
@@ -37,11 +37,7 @@ struct LibraryView: View {
             ) { result in
                 viewModel.handleImport(result, context: modelContext)
             }
-            .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
-                Button("OK") { viewModel.errorMessage = nil }
-            } message: {
-                Text(viewModel.errorMessage ?? "")
-            }
+            .errorAlert($viewModel.errorMessage)
         }
     }
 }

@@ -6,90 +6,81 @@
 //
 
 import SwiftUI
-import SwiftData
 
+/// Resets a forgotten password using Face ID / Touch ID as proof of identity.
+///
+/// There's no way to email a reset link or SMS a code in an offline-only app with no backend
+/// (see CLAUDE.md's privacy rules) — the previous version had a "reset code" text field with
+/// nothing to ever send that code, so it could never have worked. Biometric verification is the
+/// one form of "prove it's you" that's genuinely available on-device.
 struct PasswordResetView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var authService: AuthenticationService
     @State private var email = ""
     @State private var newPassword = ""
     @State private var confirmPassword = ""
-    @State private var resetToken = ""
-    @State private var isRequestingReset = false
-    @State private var isConfirmingReset = false
+    @State private var isResetting = false
     @State private var errorMessage = ""
     @State private var showingPasswordRequirements = false
-    @State private var resetRequested = false
-    
+    @State private var didSucceed = false
+
+    private var biometricName: String {
+        BiometricService().getBiometricDisplayName()
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    // Header
                     headerSection
-                    
-                    if !resetRequested {
-                        // Request Password Reset Form
-                        requestResetForm
+
+                    if didSucceed {
+                        successSection
                     } else {
-                        // Confirm Password Reset Form
-                        confirmResetForm
+                        resetForm
                     }
-                    
+
                     Spacer(minLength: 100)
                 }
                 .padding()
             }
-            .navigationTitle(resetRequested ? "Reset Password" : "Forgot Password")
+            .navigationTitle("Reset Password")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                    .accessibilityLabel("Cancel password reset")
+                    Button("Cancel") { dismiss() }
+                        .accessibilityLabel("Cancel password reset")
                 }
             }
-            .alert("Password Reset Error", isPresented: .constant(!errorMessage.isEmpty)) {
-                Button("OK") { errorMessage = "" }
-            } message: {
-                Text(errorMessage)
-            }
+            .errorAlert($errorMessage, title: "Password Reset Error")
             .sheet(isPresented: $showingPasswordRequirements) {
                 PasswordRequirementsView(isPresented: $showingPasswordRequirements, password: newPassword)
             }
         }
     }
-    
-    // MARK: - Header Section
-    
+
     private var headerSection: some View {
         VStack(spacing: 16) {
-            Image(systemName: "key")
+            Image(systemName: "faceid")
                 .font(.system(size: 60))
                 .foregroundStyle(.tint)
-            
-            Text(resetRequested ? "Reset Your Password" : "Forgot Password?")
+
+            Text("Reset Your Password")
                 .font(.largeTitle)
                 .fontWeight(.bold)
-            
-            Text(resetRequested ? 
-                 "Enter your new password below" : 
-                 "Enter your email address and we'll send you instructions to reset your password")
+
+            Text("Verify it's you with \(biometricName), then set a new password.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
     }
-    
-    // MARK: - Request Reset Form
-    
-    private var requestResetForm: some View {
+
+    private var resetForm: some View {
         VStack(spacing: 20) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Email Address")
                     .font(.headline)
-                    .foregroundStyle(.primary)
-                
                 TextField("Enter your email", text: $email)
                     .textContentType(.emailAddress)
                     .keyboardType(.emailAddress)
@@ -97,223 +88,95 @@ struct PasswordResetView: View {
                     .autocorrectionDisabled()
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Email address")
-                    .accessibilityHint("Enter your email address")
             }
-            
-            Button {
-                requestPasswordReset()
-            } label: {
-                if isRequestingReset {
-                    HStack {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("Sending Instructions...")
-                    }
-                } else {
-                    Text("Send Reset Instructions")
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(email.isEmpty || isRequestingReset)
-            .accessibilityLabel("Send password reset instructions")
-            .accessibilityHint("Send password reset email")
-        }
-    }
-    
-    // MARK: - Confirm Reset Form
-    
-    private var confirmResetForm: some View {
-        VStack(spacing: 16) {
-            Text("Enter the reset code from your email and create a new password")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.bottom, 16)
-            
-            // Reset Token Field
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Reset Code")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                
-                TextField("Enter reset code", text: $resetToken)
-                    .textContentType(.oneTimeCode)
-                    .keyboardType(.numberPad)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Reset code")
-                    .accessibilityHint("Enter the reset code from your email")
-            }
-            
-            // New Password Field
+
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("New Password")
                         .font(.headline)
-                        .foregroundStyle(.primary)
-                    
-                    Button("Requirements") {
-                        showingPasswordRequirements.toggle()
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.tint)
+                    Button("Requirements") { showingPasswordRequirements.toggle() }
+                        .font(.caption)
+                        .foregroundStyle(.tint)
                 }
-                
                 SecureField("Create a new password", text: $newPassword)
                     .textContentType(.newPassword)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("New password")
-                    .accessibilityHint("Create a new secure password")
             }
-            
-            // Confirm Password Field
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Confirm New Password")
                     .font(.headline)
-                    .foregroundStyle(.primary)
-                
                 SecureField("Confirm your new password", text: $confirmPassword)
                     .textContentType(.newPassword)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Confirm new password")
-                    .accessibilityHint("Enter your new password again to confirm")
             }
-            
-            // Reset Password Button
+
             Button {
-                confirmPasswordReset()
+                resetPassword()
             } label: {
-                if isConfirmingReset {
+                if isResetting {
                     HStack {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("Resetting Password...")
+                        ProgressView().scaleEffect(0.8)
+                        Text("Verifying with \(biometricName)…")
                     }
                 } else {
-                    Text("Reset Password")
+                    Label("Verify with \(biometricName) & Reset", systemImage: "faceid")
                 }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(!canConfirmReset || isConfirmingReset)
-            .accessibilityLabel("Reset password")
-            .accessibilityHint("Reset your password with the provided code")
+            .disabled(!canReset || isResetting)
+            .accessibilityLabel("Verify identity and reset password")
         }
     }
-    
-    // MARK: - Computed Properties
-    
-    private var canConfirmReset: Bool {
-        return !resetToken.isEmpty &&
-               !newPassword.isEmpty &&
-               !confirmPassword.isEmpty &&
-               newPassword == confirmPassword &&
-               isValidPassword(newPassword)
-    }
-    
-    // MARK: - Private Methods
-    
-    private func requestPasswordReset() {
-        guard !email.isEmpty else { return }
-        
-        isRequestingReset = true
-        errorMessage = ""
-        
-        Task {
-            do {
-                let config = ModelConfiguration(isStoredInMemoryOnly: true)
-                let container = try ModelContainer(
-                    for: User.self, UserPreferences.self, UserSession.self, UserDevice.self,
-                    configurations: config
-                )
-                let authService = AuthenticationService(modelContext: ModelContext(container))
-                try await authService.resetPassword(email: email)
-                
-                await MainActor.run {
-                    isRequestingReset = false
-                    resetRequested = true
-                }
-            } catch {
-                await MainActor.run {
-                    isRequestingReset = false
-                    errorMessage = error.localizedDescription
-                }
-            }
-        }
-    }
-    
-    private func confirmPasswordReset() {
-        guard canConfirmReset else { return }
-        
-        isConfirmingReset = true
-        errorMessage = ""
-        
-        Task {
-            do {
-                let config = ModelConfiguration(isStoredInMemoryOnly: true)
-                let container = try ModelContainer(
-                    for: User.self, UserPreferences.self, UserSession.self, UserDevice.self,
-                    configurations: config
-                )
-                let authService = AuthenticationService(modelContext: ModelContext(container))
-                try await authService.confirmPasswordReset(
-                    email: email,
-                    newPassword: newPassword,
-                    resetToken: resetToken
-                )
-                
-                await MainActor.run {
-                    isConfirmingReset = false
-                    dismiss()
-                }
-            } catch {
-                await MainActor.run {
-                    isConfirmingReset = false
-                    errorMessage = error.localizedDescription
-                }
-            }
-        }
-    }
-    
-    private func isValidPassword(_ password: String) -> Bool {
-        return password.count >= 8 &&
-               password.range(of: "[A-Z]", options: .regularExpression) != nil &&
-               password.range(of: "[a-z]", options: .regularExpression) != nil &&
-               password.range(of: "[0-9]", options: .regularExpression) != nil &&
-               password.range(of: "[!@#$%^&*(),.?\":{}|<>]", options: .regularExpression) != nil
-    }
-}
 
-// MARK: - Success View
-
-struct PasswordResetSuccessView: View {
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        VStack(spacing: 24) {
+    private var successSection: some View {
+        VStack(spacing: 16) {
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 60))
+                .font(.system(size: 50))
                 .foregroundStyle(.green)
-            
-            Text("Password Reset Successful")
-                .font(.largeTitle)
-                .fontWeight(.bold)
-            
-            Text("Your password has been reset successfully. You can now sign in with your new password.")
+            Text("Your password has been reset. You can now sign in with your new password.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            
-            Button("Sign In") {
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .accessibilityLabel("Sign in")
-            .accessibilityHint("Go to sign in screen")
-            
-            Spacer(minLength: 100)
+            Button("Done") { dismiss() }
+                .buttonStyle(.borderedProminent)
         }
-        .padding()
+    }
+
+    private var canReset: Bool {
+        !email.isEmpty && !newPassword.isEmpty &&
+        newPassword == confirmPassword && isValidPassword(newPassword)
+    }
+
+    private func resetPassword() {
+        guard canReset else { return }
+        isResetting = true
+        errorMessage = ""
+
+        Task {
+            do {
+                try await authService.resetPasswordWithBiometrics(email: email, newPassword: newPassword)
+                await MainActor.run {
+                    isResetting = false
+                    didSucceed = true
+                }
+            } catch {
+                await MainActor.run {
+                    isResetting = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func isValidPassword(_ password: String) -> Bool {
+        password.count >= 8 &&
+        password.range(of: "[A-Z]", options: .regularExpression) != nil &&
+        password.range(of: "[a-z]", options: .regularExpression) != nil &&
+        password.range(of: "[0-9]", options: .regularExpression) != nil &&
+        password.range(of: "[!@#$%^&*(),.?\":{}|<>]", options: .regularExpression) != nil
     }
 }

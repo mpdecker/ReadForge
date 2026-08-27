@@ -5,9 +5,12 @@ struct PlayerView: View {
     let document: DocumentRecord
     @State private var viewModel: PlayerViewModel
 
-    init(document: DocumentRecord, modelContext: ModelContext) {
+    init(document: DocumentRecord, modelContext: ModelContext, startSectionId: UUID? = nil, startSentenceIndex: Int = 0) {
         self.document = document
-        _viewModel = State(initialValue: PlayerViewModel(document: document, modelContext: modelContext))
+        _viewModel = State(initialValue: PlayerViewModel(
+            document: document, modelContext: modelContext,
+            startSectionId: startSectionId, startSentenceIndex: startSentenceIndex
+        ))
     }
 
     var body: some View {
@@ -25,6 +28,20 @@ struct PlayerView: View {
         }
         .onDisappear {
             viewModel.stop()
+        }
+        .sensoryFeedback(.success, trigger: viewModel.bookmarkFeedbackTrigger)
+        // Not `.errorAlert` — `errorMessage` here is a get-only computed property (proxying
+        // `PlaybackController.lastErrorMessage`, cleared via `dismissError()`), not a settable
+        // `Binding` source. Built as a real two-way `isPresented` anyway (routed through
+        // `dismissError()`) rather than the old `.constant(...)`, which never let a swipe-to-
+        // dismiss or iPad tap-outside actually clear the error.
+        .alert("Playback Error", isPresented: Binding(
+            get: { viewModel.errorMessage != nil },
+            set: { isPresented in if !isPresented { viewModel.dismissError() } }
+        )) {
+            Button("OK") { viewModel.dismissError() }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
         }
     }
 
@@ -51,7 +68,8 @@ struct PlayerView: View {
             // Current sentence display
             SentenceDisplayView(
                 sentence: viewModel.displayedSentence,
-                isAnimating: viewModel.playbackState == .playing
+                isAnimating: viewModel.playbackState == .playing,
+                highlightRange: viewModel.currentWordRange
             )
 
             Spacer()

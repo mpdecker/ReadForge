@@ -6,25 +6,33 @@ struct SectionData: Sendable, Codable {
     let startPage: Int
     let endPage: Int
     let rawText: String
+    let cleanText: String
 }
 
-struct PDFSectionDetectionService: Sendable {
+// Explicit conformance is required here: `ServiceContainer.createDefaultInstance` resolves this
+// type via `PDFSectionDetectionService() as? T` where `T == SectionDetectionService`, and Swift's
+// protocol conformance is nominal — without this, that cast silently returns nil, `resolve(...)`
+// throws `.serviceNotFound`, and every real import through `LibraryViewModel` fails immediately.
+struct PDFSectionDetectionService: Sendable, SectionDetectionService {
     private let wordsPerChunk = 3_000
 
+    /// - Parameter cleanedPages: output of `TextCleanupService.cleanPages(_:)`, kept aligned by
+    ///   page number with `pages` so both raw and cleaned text can be recovered per section.
     func detect(
         pages: [PageText],
         outlineEntries: [(title: String, pageIndex: Int)],
-        cleanedText: String
+        cleanedPages: [PageText]
     ) -> [SectionData] {
         if !outlineEntries.isEmpty {
-            return fromOutline(outlineEntries, pages: pages)
+            return fromOutline(outlineEntries, pages: pages, cleanedPages: cleanedPages)
         }
-        return fromHeuristics(cleanedText: cleanedText)
+        return fromHeuristics(pages: pages, cleanedPages: cleanedPages)
     }
 
     private func fromOutline(
         _ entries: [(title: String, pageIndex: Int)],
-        pages: [PageText]
+        pages: [PageText],
+        cleanedPages: [PageText]
     ) -> [SectionData] {
         guard !pages.isEmpty else { return [] }
         let lastIdx = pages.count - 1
@@ -34,53 +42,112 @@ struct PDFSectionDetectionService: Sendable {
             .filter { $0.pageIndex >= 0 && $0.pageIndex <= lastIdx }
             .sorted { $0.pageIndex < $1.pageIndex }
 
-        guard !sorted.isEmpty else { return fromHeuristics(cleanedText: pages.map(\.text).joined(separator: "\n\n")) }
+        guard !sorted.isEmpty else {
+            return fromHeuristics(pages: pages, cleanedPages: cleanedPages)
+        }
 
-        return sorted.enumerated().map { i, entry in
+        let cleanedByNumber = Dictionary(uniqueKeysWithValues: cleanedPages.map { ($0.pageNumber, $0.text) })
+
+        var results: [SectionData] = []
+        var order = 0
+        for i in 0..<sorted.count {
+            let entry = sorted[i]
+            // A chapter bookmark and its first subsection bookmark commonly point at the exact
+            // same destination page (the chapter's opening page). Without this check, the
+            // earlier (parent) entry's `end` computed to `max(start, nextStart - 1) == start` —
+            // truncating it to just that one page — while the next (child) entry then ALSO
+            // started at that same page, so the page's text was narrated twice in a row, once
+            // under each title. Skipping the swallowed entry keeps only the more specific title
+            // for that page and eliminates the duplication.
+            if i + 1 < sorted.count, sorted[i + 1].pageIndex == entry.pageIndex {
+                continue
+            }
             let start = entry.pageIndex
             let end = i + 1 < sorted.count ? max(start, sorted[i + 1].pageIndex - 1) : lastIdx
             let clampedEnd = min(end, lastIdx)
-            let text = pages[start...clampedEnd].map(\.text).joined(separator: "\n\n")
-            return SectionData(title: entry.title, order: i, startPage: start + 1, endPage: clampedEnd + 1, rawText: text)
+            let rawText = pages[start...clampedEnd].map(\.text).joined(separator: "\n\n")
+            let cleanText = pages[start...clampedEnd]
+                .compactMap { cleanedByNumber[$0.pageNumber] }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+            results.append(SectionData(
+                title: entry.title,
+                order: order,
+                startPage: start + 1,
+                endPage: clampedEnd + 1,
+                rawText: rawText,
+                // Cleanup can legitimately empty out a page (e.g. an all-header/footer page);
+                // only fall back to raw text if cleanup produced nothing at all for the range.
+                cleanText: cleanText.isEmpty ? rawText : cleanText
+            ))
+            order += 1
         }
+        return results
     }
 
-    private func fromHeuristics(cleanedText: String) -> [SectionData] {
-        guard !cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+    private func fromHeuristics(pages: [PageText], cleanedPages: [PageText]) -> [SectionData] {
+        let nonEmptyCleaned = cleanedPages.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !nonEmptyCleaned.isEmpty else { return [] }
 
-        let paragraphs = cleanedText.components(separatedBy: "\n\n")
+        let rawByNumber = Dictionary(uniqueKeysWithValues: pages.map { ($0.pageNumber, $0.text) })
+
         var result: [SectionData] = []
         var buffer: [String] = []
         var wordCount = 0
         var pendingTitle: String?
         var order = 0
+        var startPage: Int?
+        var endPage: Int?
 
         func flush() {
-            guard !buffer.isEmpty else { return }
+            guard !buffer.isEmpty, let start = startPage, let end = endPage else { return }
+            let cleanText = buffer.joined(separator: "\n\n")
+            let rawText = (start...end)
+                .compactMap { rawByNumber[$0] }
+                .joined(separator: "\n\n")
             result.append(SectionData(
                 title: pendingTitle ?? "Section \(order + 1)",
                 order: order,
-                startPage: 1,
-                endPage: 1,
-                rawText: buffer.joined(separator: "\n\n")
+                startPage: start,
+                endPage: end,
+                rawText: rawText.isEmpty ? cleanText : rawText,
+                cleanText: cleanText
             ))
             order += 1
             buffer = []
             wordCount = 0
             pendingTitle = nil
+            startPage = nil
+            endPage = nil
         }
 
-        for para in paragraphs {
-            let trimmed = para.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
+        for page in nonEmptyCleaned {
+            let paragraphs = page.text.components(separatedBy: "\n\n")
+            for para in paragraphs {
+                let trimmed = para.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
 
-            if isHeading(trimmed) {
-                if wordCount >= wordsPerChunk / 2 { flush() }
-                pendingTitle = trimmed
-            } else {
-                buffer.append(trimmed)
-                wordCount += trimmed.split(separator: " ").count
-                if wordCount >= wordsPerChunk { flush() }
+                if isHeading(trimmed) {
+                    if wordCount >= wordsPerChunk / 2 {
+                        flush()
+                        pendingTitle = trimmed
+                    } else if pendingTitle == nil {
+                        // Previously this unconditionally overwrote `pendingTitle`, so two
+                        // headings close together (e.g. "Chapter 1" immediately followed by
+                        // "1.1 Overview" before enough words accumulate to flush) silently lost
+                        // the first, outer heading — the resulting section ended up titled only
+                        // "1.1 Overview" even though it contains the chapter-opening content too.
+                        // Keeping the first (outermost) heading until the section actually
+                        // flushes preserves the chapter-level title instead.
+                        pendingTitle = trimmed
+                    }
+                } else {
+                    buffer.append(trimmed)
+                    wordCount += trimmed.split(separator: " ").count
+                    startPage = startPage ?? page.pageNumber
+                    endPage = page.pageNumber
+                    if wordCount >= wordsPerChunk { flush() }
+                }
             }
         }
         flush()
