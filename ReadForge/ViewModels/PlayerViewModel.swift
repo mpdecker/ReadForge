@@ -164,9 +164,19 @@ final class PlayerViewModel {
     func selectSection(at index: Int) {
         guard index != selectedSectionIndex else { return }
         selectedSectionIndex = index
+        guard currentSection != nil else { return }
 
-        if controller.playbackState == .playing, let section = currentSection {
-            controller.play(document: document, section: section)
+        switch controller.playbackState {
+        case .playing:
+            controller.play(document: document, section: currentSection!)
+        case .paused, .idle:
+            // Previously this branch did nothing — the controller kept pointing at the OLD
+            // section's audio, so tapping Play after switching chapters while paused just
+            // resumed (or replayed) the wrong section entirely, while the UI (section picker,
+            // chapter list) already showed the new one selected. Stopping here means the next
+            // Play tap starts the newly selected section fresh via `togglePlayPause()`'s `.idle`
+            // case, which correctly uses `currentSection` (now updated above).
+            controller.stop()
         }
     }
 

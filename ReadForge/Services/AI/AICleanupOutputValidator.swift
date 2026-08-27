@@ -10,8 +10,13 @@ enum AICleanupOutputValidator {
         guard !candidate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         // Losing more than 25% of the content suggests something went wrong, not cleanup.
         guard Double(candidate.count) >= Double(original.count) * 0.75 else { return false }
-        let markdownMarkers = ["```", "##", "**", "- [ ]", "> "]
+        let markdownMarkers = ["```", "##", "**", "- [ ]"]
         guard !markdownMarkers.contains(where: candidate.contains) else { return false }
+        // Checked only at the start of a line, not anywhere in the text — a plain substring
+        // check for "> " would reject perfectly correct cleanup output on ordinary technical
+        // text (e.g. "...only when n > 100 elements are processed"), which has nothing to do
+        // with markdown blockquotes.
+        guard !candidate.hasPrefix("> "), !candidate.contains("\n> ") else { return false }
         let commentaryPhrases = ["as an ai", "i cannot", "i'm sorry", "here is the cleaned", "here's the cleaned"]
         let lowered = candidate.lowercased()
         guard !commentaryPhrases.contains(where: lowered.contains) else { return false }

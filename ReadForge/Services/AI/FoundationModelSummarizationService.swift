@@ -21,17 +21,45 @@ struct FoundationModelSummarizationService {
     /// `TieredTextCleanupService` falls back to the NLP cleanup pass.
     func summarize(_ text: String, maxSentences: Int = 5) async -> String? {
         guard Self.isSystemModelAvailable else { return nil }
-        guard text.count < 12_000 else { return nil } // context-window safety margin
+
+        // Sections built from a PDF's own outline/bookmarks (`PDFSectionDetectionService
+        // .fromOutline`, the preferred path whenever the PDF has one) have NO size cap — unlike
+        // the heuristic fallback path, which caps around 3,000 words. A section spanning a whole
+        // chapter of a coarsely-bookmarked book can run tens of thousands of characters. This
+        // used to just bail (`text.count < 12_000 else { return nil }`), which meant every large
+        // chapter *always* silently fell back to the lower-quality extractive summary — with the
+        // real model fully available — with nothing to indicate why. A bounded excerpt (start +
+        // middle + end, not just a truncated prefix) still lets the real summarizer run on
+        // representative content instead of giving up outright.
+        let excerpt = Self.boundedExcerpt(of: text, limit: 12_000)
 
         let session = LanguageModelSession(instructions: Self.instructions(maxSentences: maxSentences))
         do {
-            let response = try await session.respond(to: text)
+            let response = try await session.respond(to: excerpt)
             let candidate = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             return isValidSummary(candidate, against: text) ? candidate : nil
         } catch {
             ReadForgeLogger.error(category: "AI", message: "Foundation Model summarization failed", error: error)
             return nil
         }
+    }
+
+    /// Start + middle + end, rather than a plain prefix truncation — a summary built only from
+    /// the first N characters of a long chapter would be biased toward its opening and miss
+    /// everything the chapter actually concludes with.
+    private static func boundedExcerpt(of text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+
+        let partLimit = limit / 3
+        let start = String(text.prefix(partLimit))
+        let end = String(text.suffix(partLimit))
+
+        let midpoint = text.index(text.startIndex, offsetBy: text.count / 2)
+        let midStart = text.index(midpoint, offsetBy: -partLimit / 2, limitedBy: text.startIndex) ?? text.startIndex
+        let midEnd = text.index(midStart, offsetBy: partLimit, limitedBy: text.endIndex) ?? text.endIndex
+        let middle = String(text[midStart..<midEnd])
+
+        return "\(start)\n\n[…]\n\n\(middle)\n\n[…]\n\n\(end)"
     }
 
     private func isValidSummary(_ candidate: String, against original: String) -> Bool {
@@ -43,9 +71,14 @@ struct FoundationModelSummarizationService {
         guard Double(candidate.count) <= Double(original.count) * 0.6 else { return false }
         let markdownMarkers = ["```", "##", "- [ ]"]
         guard !markdownMarkers.contains(where: candidate.contains) else { return false }
-        let commentaryPhrases = ["as an ai", "i cannot", "i'm sorry", "here is a summary", "here's a summary", "summary:"]
+
+        // Checked as a *prefix*, not a substring — a section that discusses or quotes a
+        // subsection literally titled "Summary:" (common in academic papers/reports) could
+        // otherwise produce a correct, compliant summary that gets rejected purely for
+        // containing that substring somewhere in the middle.
         let lowered = candidate.lowercased()
-        guard !commentaryPhrases.contains(where: lowered.contains) else { return false }
+        let commentaryPrefixes = ["as an ai", "i cannot", "i'm sorry", "here is a summary", "here's a summary", "summary:"]
+        guard !commentaryPrefixes.contains(where: lowered.hasPrefix) else { return false }
         return true
     }
 

@@ -16,6 +16,12 @@ struct AskModeView: View {
     @State private var hasSearched = false
     @State private var isSearching = false
     @State private var jumpTarget: SectionRecord?
+    /// Incremented on every `runSearch()` call and captured locally by that call's task — guards
+    /// against a slower, older search's results/generated answer landing *after* a newer
+    /// search's, which could otherwise show one query's passages next to a different, stale
+    /// query's generated answer with nothing indicating the mismatch (e.g. submit a query, edit
+    /// the text, and submit again before the first generation finishes).
+    @State private var searchGeneration = 0
 
     private var sections: [SectionRecord] {
         document.sections.sorted { $0.order < $1.order }
@@ -147,11 +153,15 @@ struct AskModeView: View {
         }
         let searchQuery = query
 
+        searchGeneration += 1
+        let thisGeneration = searchGeneration
+
         isSearching = true
         generatedAnswer = nil
         Task.detached(priority: .userInitiated) {
             let found = DocumentSearchService().search(query: searchQuery, in: searchableSections)
             await MainActor.run {
+                guard thisGeneration == searchGeneration else { return }
                 results = found
                 hasSearched = true
                 isSearching = false
@@ -163,6 +173,7 @@ struct AskModeView: View {
             guard #available(iOS 26.0, *) else { return }
             let answer = await FoundationModelAnswerService().answer(question: searchQuery, passages: found)
             await MainActor.run {
+                guard thisGeneration == searchGeneration else { return }
                 generatedAnswer = answer
             }
         }

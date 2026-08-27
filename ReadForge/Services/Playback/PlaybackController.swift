@@ -214,6 +214,11 @@ final class PlaybackController: NSObject, SpeechServiceDelegate, AVAudioPlayerDe
             speakCurrentSentence()
             updateNowPlaying()
         } else {
+            // Without this, finishing the last cached sentence of a section left
+            // `wordHighlightTimer` running indefinitely — `speakCurrentSentence()` (which
+            // otherwise stops it) is never called again once there's no next sentence, so the
+            // timer just kept firing every 80ms until the next `play()`/`stop()`.
+            stopWordHighlightTimer()
             playbackState = .idle
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         }
@@ -265,9 +270,15 @@ final class PlaybackController: NSObject, SpeechServiceDelegate, AVAudioPlayerDe
         stopWordHighlightTimer()
         guard cachedWordTimings?.isEmpty == false else { return }
 
-        wordHighlightTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+        // `Timer.scheduledTimer` registers in the default run-loop mode only, which stops
+        // firing while the main run loop is in `.tracking`/`.eventTracking` mode — e.g. while
+        // the user drags the sentence view's ScrollView. Without `.common`, the highlight would
+        // visibly freeze mid-scroll and jump forward the moment the gesture ends.
+        let timer = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateHighlightFromCachedPlayer() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        wordHighlightTimer = timer
     }
 
     private func stopWordHighlightTimer() {
