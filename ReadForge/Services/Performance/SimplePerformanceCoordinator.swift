@@ -92,9 +92,13 @@ final class SimplePerformanceCoordinator {
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { _ in
             ReadForgeLogger.performanceWarning(operation: "Memory Warning", issue: "System reported low memory")
-            // Could trigger cache cleanup here if needed
+            // Previously logged only — on a genuine memory-pressure signal (e.g. mid-playback of
+            // a large document with cached audio/text in memory), the app took no corrective
+            // action at all, increasing the odds of an OS jetsam/OOM kill instead of gracefully
+            // shedding cache the way this coordinator's own purpose implies it should.
+            Task { await CacheManager.shared.performIntelligentCleanup() }
         }
     }
 }

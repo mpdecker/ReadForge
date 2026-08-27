@@ -4,6 +4,7 @@ import SwiftData
 @main
 struct ReadForgeApp: App {
     @State private var performanceCoordinator = SimplePerformanceCoordinator()
+    @Environment(\.scenePhase) private var scenePhase
     let modelContainer: ModelContainer
     @StateObject private var authService: AuthenticationService
 
@@ -33,11 +34,17 @@ struct ReadForgeApp: App {
                 .environmentObject(authService)
                 .onAppear {
                     performanceCoordinator.startMonitoring()
+                    PlaybackController.configureAudioSessionCategoryAtLaunch()
                     AppLogger.didLaunch()
                 }
                 .onDisappear {
                     performanceCoordinator.stopMonitoring()
                     AppLogger.willTerminate()
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .background {
+                        authService.lock()
+                    }
                 }
         }
         .modelContainer(modelContainer)

@@ -280,6 +280,82 @@ struct AuthenticationTests {
         }
     }
 
+    // MARK: - Hardening Regression Tests
+
+    // Regression test: registering a real password under the reserved biometric-only email used
+    // to succeed silently — anyone who could pass a device biometric check (proves "device
+    // owner," not "this account's owner") could then sign into that account via Face ID,
+    // bypassing whatever password was set.
+    @Test
+    func testRegisteringReservedBiometricEmailFails() async throws {
+        do {
+            try await authService.register(
+                email: AuthenticationService.reservedBiometricEmail, password: "TestPassword123!",
+                confirmPassword: "TestPassword123!", name: nil, agreeToTerms: true
+            )
+            Issue.record("Expected AuthenticationError.reservedEmailAddress to be thrown")
+        } catch let error as AuthenticationError {
+            #expect(error == .reservedEmailAddress)
+        }
+    }
+
+    // Regression test: `register`/`changePassword`/`resetPasswordWithBiometrics` previously only
+    // checked `password == confirmPassword` and `agreeToTerms` — all real strength enforcement
+    // lived solely in each SwiftUI view's disabled-button logic, so any caller that reached the
+    // service directly (like this test) could set an empty or trivial password.
+    @Test
+    func testWeakPasswordRejectedAtServiceLayerNotJustInViews() async throws {
+        do {
+            try await authService.register(
+                email: "weak@example.com", password: "weak", confirmPassword: "weak",
+                name: nil, agreeToTerms: true
+            )
+            Issue.record("Expected AuthenticationError.weakPassword to be thrown")
+        } catch let error as AuthenticationError {
+            #expect(error == .weakPassword)
+        }
+    }
+
+    // Regression test: nothing previously observed scene-phase transitions, so authenticating
+    // once unlocked the app for the rest of the process's lifetime — `lock()` is the fix,
+    // called from `ReadForgeApp` when the app backgrounds.
+    @Test
+    func testLockRequiresReauthenticationButPreservesTheAccount() async throws {
+        try await authService.register(
+            email: "test@example.com", password: "TestPassword123!", confirmPassword: "TestPassword123!",
+            name: nil, agreeToTerms: true
+        )
+        #expect(authService.isAuthenticated)
+
+        authService.lock()
+        #expect(!authService.isAuthenticated)
+
+        await authService.signIn(email: "test@example.com", password: "TestPassword123!", deviceName: "Test Device", rememberDevice: false)
+        #expect(authService.isAuthenticated)
+    }
+
+    // Regression test: repeated failed sign-ins previously had no lockout/throttling at all
+    // beyond PBKDF2's own per-guess cost — no defense against a scripted local brute-force loop.
+    @Test
+    func testRepeatedFailedSignInsEventuallyLockOut() async throws {
+        try await authService.register(
+            email: "test@example.com", password: "TestPassword123!", confirmPassword: "TestPassword123!",
+            name: nil, agreeToTerms: true
+        )
+        await authService.signOut()
+
+        for _ in 0..<5 {
+            await authService.signIn(email: "test@example.com", password: "WrongPassword1!", deviceName: "Test Device", rememberDevice: false)
+        }
+        // The 6th attempt should be rejected as locked out even though the password is correct.
+        await authService.signIn(email: "test@example.com", password: "TestPassword123!", deviceName: "Test Device", rememberDevice: false)
+        guard case .error(let err) = authService.authenticationState else {
+            Issue.record("Expected .error(.tooManyAttempts) after repeated failures")
+            return
+        }
+        #expect(err == .tooManyAttempts)
+    }
+
     // MARK: - Security Tests
 
     @Test

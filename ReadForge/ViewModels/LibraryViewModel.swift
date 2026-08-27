@@ -7,10 +7,15 @@ import Combine
 final class LibraryViewModel {
     var showImporter = false
     var errorMessage: String?
-    var processingDocumentId: UUID?
+    /// A set, not a single optional id — the Import button was never disabled while an import
+    /// was in flight, so starting a second import before the first finished used to overwrite
+    /// this single value: document A's row spinner would vanish mid-processing (the moment B's
+    /// import began) while B's row showed the spinner regardless of A's real state, and whichever
+    /// document finished last would clear it even if the other was still processing.
+    var processingDocumentIds: Set<UUID> = []
 
     private let serviceContainer = ServiceContainer.shared
-    private let cache = CacheManager()
+    private let cache = CacheManager.shared
 
     func handleImport(_ result: Result<[URL], Error>, context: ModelContext) {
         switch result {
@@ -42,7 +47,7 @@ final class LibraryViewModel {
             context.insert(newRecord)
             try context.save()
             record = newRecord
-            processingDocumentId = newRecord.id
+            processingDocumentIds.insert(newRecord.id)
 
             let fileURL  = newRecord.fileURL
             let extractor = extractorFactory.extractor(for: format)
@@ -76,7 +81,7 @@ final class LibraryViewModel {
                     // no raster fallback available.
                     newRecord.processingStatus = .needsOCR
                     try context.save()
-                    processingDocumentId = nil
+                    processingDocumentIds.remove(newRecord.id)
                     return
                 }
 
@@ -92,7 +97,7 @@ final class LibraryViewModel {
                     // OCR still couldn't pull readable text (poor scan quality, handwriting).
                     newRecord.processingStatus = .needsOCR
                     try context.save()
-                    processingDocumentId = nil
+                    processingDocumentIds.remove(newRecord.id)
                     return
                 }
                 workingPages = ocrPages
@@ -147,6 +152,7 @@ final class LibraryViewModel {
                     endPage: data.endPage
                 )
                 s.cleanText = data.cleanText
+                s.refreshWordCount()
                 s.document = newRecord
                 context.insert(s)
                 return s
@@ -165,7 +171,9 @@ final class LibraryViewModel {
         } catch {
             fail(record: record, message: "Processing failed: \(error.localizedDescription)", context: context)
         }
-        processingDocumentId = nil
+        if let record {
+            processingDocumentIds.remove(record.id)
+        }
     }
 
     private func fail(record: DocumentRecord?, message: String, context: ModelContext) {

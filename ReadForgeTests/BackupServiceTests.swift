@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import SwiftData
+import ZIPFoundation
 @testable import ReadForge
 
 @Suite(.serialized)
@@ -134,5 +135,60 @@ struct BackupServiceTests {
         let documents = try destContext.fetch(FetchDescriptor<DocumentRecord>())
         #expect(documents.count == 3)
         #expect(Set(documents.map(\.title)) == Set(["Doc 0", "Doc 1", "Doc 2"]))
+    }
+
+    // Regression test: the version guard used to accept `formatVersion <= Self.formatVersion`
+    // instead of an exact match. v1 used a completely different archive layout, so a v1 (or any
+    // other older/mismatched) manifest previously sailed through v2's per-document-file restore
+    // logic, where none of its lookups matched anything — every document was silently skipped
+    // and the restore reported success having imported zero documents.
+    @Test func importingAnOlderIncompatibleFormatVersionThrows() async throws {
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        struct OldManifest: Codable { let formatVersion: Int; let exportedAt: Date; let documentIds: [UUID] }
+        try encoder.encode(OldManifest(formatVersion: 1, exportedAt: Date(), documentIds: []))
+            .write(to: staging.appendingPathComponent("manifest.json"))
+
+        let zipURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".zip")
+        defer { try? FileManager.default.removeItem(at: zipURL) }
+        try FileManager.default.zipItem(at: staging, to: zipURL, shouldKeepParent: false)
+
+        do {
+            try await BackupService().importBackup(from: zipURL, context: destContext)
+            Issue.record("Expected BackupError.incompatibleVersion to be thrown")
+        } catch let error as BackupService.BackupError {
+            #expect(error == .incompatibleVersion(1))
+        }
+
+        let documents = try destContext.fetch(FetchDescriptor<DocumentRecord>())
+        #expect(documents.isEmpty, "A rejected restore shouldn't leave partial state")
+    }
+
+    // Regression test: a restored document whose original file wasn't in the archive used to get
+    // `filePath` set to `/dev/null` — a real device node, so a naive `fileExists` check on it
+    // reports `true`, silently hiding that nothing real is there. `sourceFileMissing` makes that
+    // state explicit and checkable instead.
+    @Test func restoringADocumentWhoseSourceFileIsMissingSetsTheFlag() async throws {
+        // A file that gets deleted before export finishes reading it — export still records
+        // `originalFileName` as nil-equivalent by virtue of the file not existing at export time.
+        let tmpFile = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        // Deliberately never created — `exportBackup` checks `fileExists` before copying.
+
+        let document = DocumentRecord(title: "No Source File", fileURL: tmpFile)
+        sourceContext.insert(document)
+        try sourceContext.save()
+
+        let backupURL = try await BackupService().exportBackup(context: sourceContext)
+        defer { try? FileManager.default.removeItem(at: backupURL) }
+
+        try await BackupService().importBackup(from: backupURL, context: destContext)
+
+        let restored = try #require(try destContext.fetch(FetchDescriptor<DocumentRecord>()).first)
+        #expect(restored.sourceFileMissing)
+        #expect(!FileManager.default.fileExists(atPath: restored.filePath), "Placeholder path must not resolve to a real file, unlike the old /dev/null sentinel")
     }
 }

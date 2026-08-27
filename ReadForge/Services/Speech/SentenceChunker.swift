@@ -59,7 +59,7 @@ struct SentenceChunker {
         var remaining = text
         while remaining.count > maxLength {
             let cutIndex = remaining.index(remaining.startIndex, offsetBy: maxLength)
-            if let spaceIndex = remaining[..<cutIndex].lastIndex(of: " ") {
+            if let spaceIndex = remaining[..<cutIndex].lastIndex(of: " "), spaceIndex > remaining.startIndex {
                 result.append(String(remaining[..<spaceIndex]))
                 remaining = String(remaining[remaining.index(after: spaceIndex)...])
             } else {

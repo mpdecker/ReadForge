@@ -36,6 +36,14 @@ final class NativeSpeechService: NSObject, SpeechServiceProtocol, AVSpeechSynthe
 
     func speak(_ text: String) {
         currentText = text
+        // `AVSpeechSynthesizer.speak(_:)` enqueues rather than interrupts if the synthesizer is
+        // already speaking — every current call site in `PlaybackController` stops first, so
+        // this was never actually triggered, but the method itself provided no protection: any
+        // future/alternate caller that forgot to stop first would silently queue utterances that
+        // played back-to-back unexpectedly instead of replacing what was playing.
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = rate
         utterance.voice = voiceIdentifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
@@ -49,15 +57,26 @@ final class NativeSpeechService: NSObject, SpeechServiceProtocol, AVSpeechSynthe
     func setRate(_ rate: Float) { self.rate = rate }
     func setVoice(_ voiceIdentifier: String?) { self.voiceIdentifier = voiceIdentifier }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        delegate?.speechServiceDidFinishUtterance()
+    // AVSpeechSynthesizerDelegate callbacks aren't documented as guaranteed to arrive on the
+    // main thread, and `delegate` (`PlaybackController`) is `@MainActor` — it mutates
+    // `@Observable` playback state and saves to a SwiftData `ModelContext` directly from
+    // `speechServiceDidFinishUtterance()`. Hopping explicitly here mirrors the same defensive
+    // pattern `PlaybackController` already uses for its `AVAudioPlayerDelegate` conformance
+    // (`nonisolated` + `Task { @MainActor in ... }`) rather than assuming these two delegate
+    // APIs behave differently.
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.delegate?.speechServiceDidFinishUtterance()
+        }
     }
 
-    func speechSynthesizer(
+    nonisolated func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         willSpeakRangeOfSpeechString characterRange: NSRange,
         utterance: AVSpeechUtterance
     ) {
-        delegate?.speechServiceWillSpeakRange(characterRange, in: utterance.speechString)
+        Task { @MainActor in
+            self.delegate?.speechServiceWillSpeakRange(characterRange, in: utterance.speechString)
+        }
     }
 }

@@ -9,10 +9,27 @@ private struct AudioExportRequest: Identifiable {
     let sections: [(title: String, text: String)]
 }
 
+/// Where to open the player to — tapping a specific chapter row previously always opened the
+/// generic resume/default position (`showPlayer = true` was identical for every row, regardless
+/// of which section was tapped), so tapping "Chapter 7" silently played whatever chapter progress
+/// already pointed at instead. This distinguishes "resume/play bar" (no specific section) from
+/// "this exact chapter row was tapped" (a specific section to jump straight to).
+private enum PlayerDestination: Identifiable, Hashable {
+    case resume
+    case section(SectionRecord)
+
+    var id: String {
+        switch self {
+        case .resume: return "resume"
+        case .section(let section): return section.id.uuidString
+        }
+    }
+}
+
 struct DocumentDetailView: View {
     let document: DocumentRecord
     @Environment(\.modelContext) private var modelContext
-    @State private var showPlayer = false
+    @State private var playerDestination: PlayerDestination?
     @State private var precachingSectionId: UUID?
     @State private var precachedSectionIds: Set<UUID> = []
     @State private var precacheTask: Task<Void, Never>?
@@ -34,13 +51,26 @@ struct DocumentDetailView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.large)
+        .onAppear {
+            // `precachedSectionIds` is plain `@State` with nothing reading back from the actual
+            // on-disk cache — since this view is recreated fresh every time it's pushed (via
+            // `NavigationLink(value:)` from the library), popping back and re-entering the same
+            // document previously reset the "Downloaded" checkmark to empty even though the
+            // audio was still fully cached on disk.
+            refreshPrecachedSectionIds()
+        }
         .onDisappear {
             // Otherwise a "Download" left running when the user navigates away keeps
             // synthesizing every remaining sentence in the background indefinitely.
             precacheTask?.cancel()
         }
-        .navigationDestination(isPresented: $showPlayer) {
-            PlayerView(document: document, modelContext: modelContext)
+        .navigationDestination(item: $playerDestination) { destination in
+            switch destination {
+            case .resume:
+                PlayerView(document: document, modelContext: modelContext)
+            case .section(let section):
+                PlayerView(document: document, modelContext: modelContext, startSectionId: section.id)
+            }
         }
         .navigationDestination(item: $summarySection) { section in
             SectionSummaryView(section: section)
@@ -128,7 +158,7 @@ struct DocumentDetailView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .contentShape(Rectangle())
-                .onTapGesture { showPlayer = true }
+                .onTapGesture { playerDestination = .section(section) }
                 .swipeActions(edge: .leading) {
                     Button {
                         precacheSection(section)
@@ -161,7 +191,7 @@ struct DocumentDetailView: View {
 
     private var playBar: some View {
         Button {
-            showPlayer = true
+            playerDestination = .resume
         } label: {
             Label(resumeLabel, systemImage: "play.fill")
                 .font(.headline)
@@ -251,6 +281,37 @@ struct DocumentDetailView: View {
             guard !Task.isCancelled else { return }
             precachingSectionId = nil
             precachedSectionIds.insert(sectionId)
+        }
+    }
+
+    /// Checks each section's sentences against the on-disk cache (same key derivation as
+    /// `precacheSection`) so the "Downloaded" checkmark reflects reality after this view is
+    /// re-created, rather than always starting empty.
+    private func refreshPrecachedSectionIds() {
+        let documentId = document.id
+        let sectionsSnapshot = sections.map { (id: $0.id, text: $0.cleanText ?? $0.rawText) }
+        let (voiceId, rate) = PlaybackController.defaultVoiceAndRate()
+
+        Task {
+            var found: Set<UUID> = []
+            for section in sectionsSnapshot {
+                guard !Task.isCancelled else { return }
+                let sentences = SentenceChunker().chunk(section.text)
+                guard !sentences.isEmpty else { continue }
+                var allCached = true
+                for sentence in sentences {
+                    let key = audioCache.cacheKey(
+                        documentId: documentId, sectionId: section.id, voiceId: voiceId, rate: rate, text: sentence
+                    )
+                    if await audioCache.cachedFileURL(forKey: key) == nil {
+                        allCached = false
+                        break
+                    }
+                }
+                if allCached { found.insert(section.id) }
+            }
+            guard !Task.isCancelled else { return }
+            precachedSectionIds = found
         }
     }
 }

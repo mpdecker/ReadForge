@@ -45,6 +45,12 @@ final class PlaybackController: NSObject, SpeechServiceDelegate, AVAudioPlayerDe
     private let audioCache = AudioCacheService.shared
     private var cachedPlayer: AVAudioPlayer?
     private var sentences: [String] = []
+    /// Each sentence's start position (in `Character` offsets) within the section text it was
+    /// chunked from — computed alongside `sentences` in `play()`, consumed by `saveProgress()`.
+    /// CLAUDE.md requires progress saved "per sentence, per character offset," but this was
+    /// previously always persisted as a hardcoded `0` — the field existed end-to-end (model,
+    /// backup round-trip) yet no caller ever supplied a real value.
+    private var sentenceStartOffsets: [Int] = []
     private var modelContext: ModelContext?
     private var document: DocumentRecord?
     private var didRegisterRemoteCommands = false
@@ -82,6 +88,21 @@ final class PlaybackController: NSObject, SpeechServiceDelegate, AVAudioPlayerDe
         return (voiceId, rate)
     }
 
+    /// Sets just the playback category at app launch, before any `PlaybackController` instance
+    /// exists — CLAUDE.md requires "set `AVAudioSession` category to `.playback` at launch," but
+    /// previously the category was only ever set the first time a specific document's Player
+    /// screen appeared (`configureAudioSession()` below, called from `PlayerViewModel.configure()`
+    /// on `PlayerView.onAppear`). Deliberately does NOT call `setActive(true)` or register remote
+    /// commands/interruption handling — those still wait for actual playback so the app doesn't
+    /// take audio focus away from other apps before the user has opened a document.
+    static func configureAudioSessionCategoryAtLaunch() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: .mixWithOthers)
+        } catch {
+            ReadForgeLogger.error(category: "Playback", message: "Initial AVAudioSession category configuration failed", error: error)
+        }
+    }
+
     func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: .mixWithOthers)
@@ -103,7 +124,9 @@ final class PlaybackController: NSObject, SpeechServiceDelegate, AVAudioPlayerDe
 
         self.document = document
         currentSection = section
-        sentences = chunker.chunk(section.cleanText ?? section.rawText)
+        let sectionText = section.cleanText ?? section.rawText
+        sentences = chunker.chunk(sectionText)
+        sentenceStartOffsets = Self.computeSentenceStartOffsets(sentences, in: sectionText)
 
         guard !sentences.isEmpty else {
             playbackState = .idle
@@ -148,6 +171,7 @@ final class PlaybackController: NSObject, SpeechServiceDelegate, AVAudioPlayerDe
         stopWordHighlightTimer()
         playbackState = .idle
         sentences = []
+        sentenceStartOffsets = []
         currentSection = nil
         currentSentenceIndex = 0
         currentWordRange = nil
@@ -299,13 +323,36 @@ final class PlaybackController: NSObject, SpeechServiceDelegate, AVAudioPlayerDe
 
     private func saveProgress() {
         guard let doc = document, let section = currentSection, let ctx = modelContext else { return }
+        let offset = sentenceStartOffsets.indices.contains(currentSentenceIndex)
+            ? sentenceStartOffsets[currentSentenceIndex] : 0
         StorageService.updateProgress(
             document: doc,
             sectionId: section.id,
             sentenceIndex: currentSentenceIndex,
-            characterOffset: 0,
+            characterOffset: offset,
             context: ctx
         )
+    }
+
+    /// Locates each chunked sentence's start position within the original section text by
+    /// searching forward from the end of the previous match. `SentenceChunker` only trims/joins
+    /// whitespace between sentences — it never alters a sentence's own characters — so each
+    /// sentence's content normally still appears verbatim in `text`. If a match can't be found
+    /// (e.g. whitespace differences prevented an exact substring match), falls back to the
+    /// previous sentence's offset rather than silently resetting to 0, so progress still
+    /// advances monotonically instead of looking like playback jumped backward.
+    private static func computeSentenceStartOffsets(_ sentences: [String], in text: String) -> [Int] {
+        var offsets: [Int] = []
+        var searchStart = text.startIndex
+        for sentence in sentences {
+            if !sentence.isEmpty, let range = text.range(of: sentence, range: searchStart..<text.endIndex) {
+                offsets.append(text.distance(from: text.startIndex, to: range.lowerBound))
+                searchStart = range.upperBound
+            } else {
+                offsets.append(offsets.last ?? 0)
+            }
+        }
+        return offsets
     }
 
     // Duration in seconds estimated from word count at current playback rate.

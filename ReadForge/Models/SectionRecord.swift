@@ -11,6 +11,14 @@ final class SectionRecord {
     var startPage: Int
     var endPage: Int
     var createdAt: Date
+    /// Precomputed from `cleanText ?? rawText` whenever either is set (init, and
+    /// `refreshWordCount()` after cleanup/restore) — `DocumentRecord.wordCount` sums these
+    /// instead of splitting every section's full text on every access. That computed property is
+    /// read from the library list row for every visible document on every render/scroll, and
+    /// re-splitting potentially hundreds of pages of text just to show a "~N min" label
+    /// contradicted CLAUDE.md's "never load a full document into memory" / "load sections on
+    /// demand."
+    var wordCount: Int = 0
 
     @Relationship(inverse: \DocumentRecord.sections) var document: DocumentRecord?
 
@@ -22,5 +30,16 @@ final class SectionRecord {
         self.startPage = startPage
         self.endPage = endPage
         self.createdAt = Date()
+        self.wordCount = Self.countWords(rawText)
+    }
+
+    /// Call after setting `cleanText` (or `rawText`) outside of `init` — cleanup/restore are the
+    /// only two call sites that do this (see `LibraryViewModel` and `BackupService`).
+    func refreshWordCount() {
+        wordCount = Self.countWords(cleanText ?? rawText)
+    }
+
+    private static func countWords(_ text: String) -> Int {
+        text.split(separator: " ").count
     }
 }

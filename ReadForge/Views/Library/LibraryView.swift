@@ -9,13 +9,13 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if documents.isEmpty && viewModel.processingDocumentId == nil {
+                if documents.isEmpty && viewModel.processingDocumentIds.isEmpty {
                     LibraryEmptyStateView { viewModel.showImporter = true }
                 } else {
                     List(documents) { doc in
                         NavigationLink(value: doc) {
                             DocumentRowView(document: doc,
-                                           isProcessing: viewModel.processingDocumentId == doc.id)
+                                           isProcessing: viewModel.processingDocumentIds.contains(doc.id))
                         }
                     }
                     .listStyle(.plain)

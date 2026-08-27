@@ -5,15 +5,21 @@
 //  Created by Matthieu Decker on 5/10/26.
 //
 
+import CryptoKit
 import Foundation
 
 /// Intelligent caching system for ReadForge
 @MainActor
 @Observable
 final class CacheManager {
-    
+
+    /// Shared instance so a single memory-pressure handler (`SimplePerformanceCoordinator`) can
+    /// actually reach the same cache that callers populate — a previous per-call-site instance
+    /// meant nothing external could ever trigger cleanup on the one actually holding data.
+    static let shared = CacheManager()
+
     // MARK: - Properties
-    
+
     private let memoryCache = NSCache<NSString, NSCacheItem>()
     private let diskCacheURL: URL
     private let fileManager = FileManager.default
@@ -230,14 +236,21 @@ final class CacheManager {
     
     /// Cache AI model results
     func cacheAIResult(_ result: String, for input: String) async {
-        let hash = input.hash
-        await store(result, forKey: "ai_result_\(hash)")
+        await store(result, forKey: "ai_result_\(Self.stableKey(for: input))")
     }
-    
+
     /// Get cached AI result
     func getCachedAIResult(for input: String) async -> String? {
-        let hash = input.hash
-        return await retrieve(String.self, forKey: "ai_result_\(hash)")
+        return await retrieve(String.self, forKey: "ai_result_\(Self.stableKey(for: input))")
+    }
+
+    /// `String.hash`/`.hashValue` is randomized per process launch (Swift's hash-flooding
+    /// protection) — the same `input` produced a different key every app launch, so this cache
+    /// looked persistent but actually never hit across a relaunch; every previous session's
+    /// entries just sat on disk as permanently-unreachable orphans until the 7/30-day sweep
+    /// caught them. SHA256 is stable across launches and still filename-safe.
+    private static func stableKey(for input: String) -> String {
+        SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     
     // MARK: - Private Methods
@@ -245,7 +258,10 @@ final class CacheManager {
     private func storeToDisk(_ data: Data, forKey key: String) async {
         let fileURL = diskCacheURL.appendingPathComponent(key)
         do {
-            try data.write(to: fileURL)
+            // Atomic so a crash/termination mid-write can't leave a torn file — this is a
+            // recomputable cache (a torn file just fails to decode and is treated as a miss), so
+            // the impact of the previous non-atomic write was low, but it's an easy, free fix.
+            try data.write(to: fileURL, options: .atomic)
         } catch {
             ReadForgeLogger.error(category: "Cache", message: "Failed to write to disk cache", error: error)
         }

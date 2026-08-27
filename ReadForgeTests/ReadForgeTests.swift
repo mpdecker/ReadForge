@@ -86,18 +86,4 @@ struct ReadForgeTests {
         #expect(record.wordCount == 7)
         #expect(record.estimatedListeningMinutes > 0.0)
     }
-    
-    @Test func testSimpleAuthenticationService() {
-        let authService = SimpleAuthenticationService()
-        
-        // Test initial state
-        #expect(authService.isUnlocked == true) // Should be unlocked by default for local app
-        
-        // Test lock/unlock
-        authService.lock()
-        #expect(authService.isUnlocked == false)
-        
-        authService.unlock()
-        #expect(authService.isUnlocked == true)
     }
-}

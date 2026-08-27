@@ -22,10 +22,17 @@ struct PDFExtractionService: Sendable, DocumentExtracting {
         guard !pdf.isLocked else { throw ExtractionError.passwordProtected }
         guard pdf.pageCount > 0 else { throw ExtractionError.noPages }
 
-        return (0..<pdf.pageCount).compactMap { index -> PageText? in
-            guard let page = pdf.page(at: index) else { return nil }
-            let text = page.string ?? ""
-            return PageText(pageNumber: index + 1, text: text)
+        // `map`, not `compactMap`: `SectionDetectionService.fromOutline` treats each outline
+        // entry's `pageIndex` (an absolute 0-based PDF page index) as a direct subscript into
+        // this array (`pages[start...end]`). Dropping an entry for any single page that fails to
+        // load (a malformed page — not rare in real-world scanned/converted PDFs) used to shift
+        // every array position after it out of alignment with the real PDF page index, so every
+        // outline destination past that point silently retrieved the wrong page's text for the
+        // rest of the document. A page that fails to load instead contributes an empty-text
+        // placeholder at its correct position, keeping `pages.count == pdf.pageCount` always.
+        return (0..<pdf.pageCount).map { index -> PageText in
+            guard let page = pdf.page(at: index) else { return PageText(pageNumber: index + 1, text: "") }
+            return PageText(pageNumber: index + 1, text: page.string ?? "")
         }
     }
 

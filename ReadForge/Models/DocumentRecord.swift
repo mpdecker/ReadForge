@@ -21,6 +21,15 @@ final class DocumentRecord {
     var importedAt: Date
     private var statusRaw: String
     var languageCode: String?
+    /// True only when a backup restore couldn't find this document's original file in the
+    /// archive (e.g. it was iCloud-offloaded or already deleted at export time). Playback itself
+    /// never needs the original file back (audio comes from `sections`' stored raw/clean text),
+    /// but any future re-extraction/re-OCR feature must check this before trying to reopen
+    /// `fileURL` — a restored document with no source file previously got a `filePath` of
+    /// `/dev/null`, which is misleading: `/dev/null` is a real device node, so a naive
+    /// `FileManager.fileExists(atPath:)` check on it reports `true`, silently hiding the fact
+    /// that nothing real is there.
+    var sourceFileMissing: Bool = false
     @Relationship(deleteRule: .cascade) var sections: [SectionRecord] = []
     @Relationship(deleteRule: .cascade) var bookmarks: [BookmarkRecord] = []
     @Relationship(deleteRule: .cascade) var playbackState: PlaybackState?
@@ -32,8 +41,10 @@ final class DocumentRecord {
         set { statusRaw = newValue.rawValue }
     }
 
+    /// Sums each section's precomputed `wordCount` rather than re-splitting every section's full
+    /// text on every access — see `SectionRecord.wordCount`'s doc comment.
     var wordCount: Int {
-        sections.reduce(0) { $0 + ($1.cleanText ?? $1.rawText).split(separator: " ").count }
+        sections.reduce(0) { $0 + $1.wordCount }
     }
 
     var estimatedListeningMinutes: Double { Double(wordCount) / 160.0 }

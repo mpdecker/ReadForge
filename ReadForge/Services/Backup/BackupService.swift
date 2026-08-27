@@ -16,6 +16,7 @@ struct BackupService {
         case noDocuments
         case invalidArchive
         case unsupportedVersion(Int)
+        case incompatibleVersion(Int)
 
         var errorDescription: String? {
             switch self {
@@ -25,6 +26,8 @@ struct BackupService {
                 return "This doesn't look like a ReadForge backup file."
             case .unsupportedVersion(let version):
                 return "This backup was made with a newer version of ReadForge (format \(version)) and can't be restored here."
+            case .incompatibleVersion(let version):
+                return "This backup uses an old, incompatible format (format \(version)) that can no longer be restored."
             }
         }
     }
@@ -212,18 +215,33 @@ struct BackupService {
         guard let manifestData = try? Data(contentsOf: extractDir.appendingPathComponent("manifest.json")),
               let manifest = try? decoder.decode(Manifest.self, from: manifestData)
         else { throw BackupError.invalidArchive }
-        guard manifest.formatVersion <= Self.formatVersion else {
-            throw BackupError.unsupportedVersion(manifest.formatVersion)
+        // Must be an exact match, not `<=`: v1 used a completely different archive layout (see
+        // the doc comment on `formatVersion`), and there is no migration from it. `<=` let a v1
+        // (or any other older/mismatched) manifest silently proceed through v2's per-document-file
+        // logic, where none of its lookups match, so every document was skipped and the restore
+        // reported success having imported zero documents.
+        guard manifest.formatVersion == Self.formatVersion else {
+            if manifest.formatVersion > Self.formatVersion {
+                throw BackupError.unsupportedVersion(manifest.formatVersion)
+            } else {
+                throw BackupError.incompatibleVersion(manifest.formatVersion)
+            }
         }
 
-        let existingIds = Set(try context.fetch(FetchDescriptor<DocumentRecord>()).map(\.id))
+        var existingIds = Set(try context.fetch(FetchDescriptor<DocumentRecord>()).map(\.id))
         let filesDir = extractDir.appendingPathComponent("Files", isDirectory: true)
         let documentsDir = extractDir.appendingPathComponent("Documents", isDirectory: true)
 
         for documentId in manifest.documentIds {
-            // Skip documents already present (e.g. restoring the same backup twice) rather
-            // than creating duplicates.
+            // Skip documents already present (e.g. restoring the same backup twice) rather than
+            // creating duplicates. `existingIds` must be updated as each id is consumed, not just
+            // checked against the pre-loop snapshot — none of the four restored model types
+            // enforce a uniqueness constraint on `id`, so a corrupted/crafted manifest listing the
+            // same id twice previously sailed through this guard both times and created two
+            // records sharing one id (which `StorageService.fetchDocument(id:)`'s `.first` match
+            // then resolves to arbitrarily/unstably).
             guard !existingIds.contains(documentId) else { continue }
+            existingIds.insert(documentId)
 
             // Only this one document's snapshot is ever decoded into memory at a time — never
             // the whole backup's worth of section text at once.
@@ -232,14 +250,21 @@ struct BackupService {
                   let snapshot = try? decoder.decode(DocumentSnapshot.self, from: snapshotData)
             else { continue } // skip a corrupt/missing entry rather than aborting the whole restore
 
-            var fileURL = URL(fileURLWithPath: "/dev/null")
+            // `/dev/null` is a real device node — `FileManager.fileExists(atPath:)` reports
+            // `true` for it, so a naive future check for "does this document still have its
+            // source file" would get a false positive. A placeholder path that's guaranteed not
+            // to exist, plus an explicit `sourceFileMissing` flag, makes this state checkable
+            // rather than silently misleading.
+            let sandboxDir = try DocumentImportService.sandboxURL()
+            var fileURL = sandboxDir.appendingPathComponent("missing-\(snapshot.id.uuidString)")
+            var sourceFileMissing = true
             if let originalFileName = snapshot.originalFileName {
                 let sourceFile = filesDir.appendingPathComponent(originalFileName)
                 if FileManager.default.fileExists(atPath: sourceFile.path) {
-                    let sandboxDir = try DocumentImportService.sandboxURL()
                     let destFile = sandboxDir.appendingPathComponent(originalFileName)
                     try? FileManager.default.copyItem(at: sourceFile, to: destFile)
                     fileURL = destFile
+                    sourceFileMissing = false
                 }
             }
 
@@ -249,6 +274,7 @@ struct BackupService {
             record.importedAt = snapshot.importedAt
             record.processingStatus = ProcessingStatus(rawValue: snapshot.status) ?? .imported
             record.languageCode = snapshot.languageCode
+            record.sourceFileMissing = sourceFileMissing
             context.insert(record)
 
             record.sections = snapshot.sections.map { s in
@@ -258,6 +284,7 @@ struct BackupService {
                 )
                 section.id = s.id
                 section.cleanText = s.cleanText
+                section.refreshWordCount()
                 section.document = record
                 context.insert(section)
                 return section

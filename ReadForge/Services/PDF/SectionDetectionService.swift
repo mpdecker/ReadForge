@@ -48,7 +48,20 @@ struct PDFSectionDetectionService: Sendable, SectionDetectionService {
 
         let cleanedByNumber = Dictionary(uniqueKeysWithValues: cleanedPages.map { ($0.pageNumber, $0.text) })
 
-        return sorted.enumerated().map { i, entry in
+        var results: [SectionData] = []
+        var order = 0
+        for i in 0..<sorted.count {
+            let entry = sorted[i]
+            // A chapter bookmark and its first subsection bookmark commonly point at the exact
+            // same destination page (the chapter's opening page). Without this check, the
+            // earlier (parent) entry's `end` computed to `max(start, nextStart - 1) == start` —
+            // truncating it to just that one page — while the next (child) entry then ALSO
+            // started at that same page, so the page's text was narrated twice in a row, once
+            // under each title. Skipping the swallowed entry keeps only the more specific title
+            // for that page and eliminates the duplication.
+            if i + 1 < sorted.count, sorted[i + 1].pageIndex == entry.pageIndex {
+                continue
+            }
             let start = entry.pageIndex
             let end = i + 1 < sorted.count ? max(start, sorted[i + 1].pageIndex - 1) : lastIdx
             let clampedEnd = min(end, lastIdx)
@@ -57,17 +70,19 @@ struct PDFSectionDetectionService: Sendable, SectionDetectionService {
                 .compactMap { cleanedByNumber[$0.pageNumber] }
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n\n")
-            return SectionData(
+            results.append(SectionData(
                 title: entry.title,
-                order: i,
+                order: order,
                 startPage: start + 1,
                 endPage: clampedEnd + 1,
                 rawText: rawText,
                 // Cleanup can legitimately empty out a page (e.g. an all-header/footer page);
                 // only fall back to raw text if cleanup produced nothing at all for the range.
                 cleanText: cleanText.isEmpty ? rawText : cleanText
-            )
+            ))
+            order += 1
         }
+        return results
     }
 
     private func fromHeuristics(pages: [PageText], cleanedPages: [PageText]) -> [SectionData] {
@@ -113,8 +128,19 @@ struct PDFSectionDetectionService: Sendable, SectionDetectionService {
                 guard !trimmed.isEmpty else { continue }
 
                 if isHeading(trimmed) {
-                    if wordCount >= wordsPerChunk / 2 { flush() }
-                    pendingTitle = trimmed
+                    if wordCount >= wordsPerChunk / 2 {
+                        flush()
+                        pendingTitle = trimmed
+                    } else if pendingTitle == nil {
+                        // Previously this unconditionally overwrote `pendingTitle`, so two
+                        // headings close together (e.g. "Chapter 1" immediately followed by
+                        // "1.1 Overview" before enough words accumulate to flush) silently lost
+                        // the first, outer heading — the resulting section ended up titled only
+                        // "1.1 Overview" even though it contains the chapter-opening content too.
+                        // Keeping the first (outermost) heading until the section actually
+                        // flushes preserves the chapter-level title instead.
+                        pendingTitle = trimmed
+                    }
                 } else {
                     buffer.append(trimmed)
                     wordCount += trimmed.split(separator: " ").count

@@ -15,6 +15,12 @@ struct EPUBExtractionService: Sendable, DocumentExtracting {
 
         var pages: [PageText] = []
         for (index, href) in spine.enumerated() {
+            // `href` is already percent-decoded (see `parseOPF`) so it matches the literal,
+            // unencoded entry name ZIPFoundation stores — OPF manifest hrefs are XML attribute
+            // values and, per the EPUB spec, spaces/non-ASCII characters in them are
+            // percent-encoded (e.g. "chapter%2001.xhtml"), but the actual ZIP entry is named
+            // literally ("chapter 01.xhtml"). Looking up the still-encoded href here previously
+            // failed the archive subscript silently, dropping that entire chapter with no error.
             let fullPath = opfDir.isEmpty ? href : "\(opfDir)/\(href)"
             guard let entry = archive[fullPath] else { continue }
             let data = try extractData(entry, from: archive)
@@ -93,8 +99,10 @@ struct EPUBExtractionService: Sendable, DocumentExtracting {
         let data = try extractData(entry, from: archive)
         let parser = OPFParser()
         XMLParser(data: data).withDelegate(parser).parse()
-        // Resolve spine item refs against manifest hrefs
-        let hrefs = parser.spineIds.compactMap { parser.manifest[$0] }
+        // Resolve spine item refs against manifest hrefs, percent-decoding each — see the
+        // `extractPages` doc comment on why the raw attribute value can't be used directly as a
+        // ZIP entry name.
+        let hrefs = parser.spineIds.compactMap { parser.manifest[$0] }.map { $0.removingPercentEncoding ?? $0 }
         return (parser.meta, hrefs)
     }
 
@@ -119,6 +127,18 @@ struct EPUBExtractionService: Sendable, DocumentExtracting {
     private func xhtmlToPlainText(_ data: Data) -> String {
         guard var text = String(data: data, encoding: .utf8)
                       ?? String(data: data, encoding: .isoLatin1) else { return "" }
+
+        // Strip <script>/<style>/<head> blocks — TAG AND CONTENT together — before the generic
+        // tag-strip below, which only removes markup, not the text between tags. Per-chapter
+        // inline CSS (`<style>body{...}</style>` inside <head>) is extremely common in EPUB, and
+        // without this its raw CSS/JS text was left in place and prepended verbatim to the
+        // narrated chapter.
+        for tag in ["script", "style", "head"] {
+            text = text.replacingOccurrences(
+                of: "(?is)<\(tag)\\b[^>]*>.*?</\(tag)>",
+                with: "", options: .regularExpression
+            )
+        }
 
         // Block-level elements → paragraph breaks
         text = text.replacingOccurrences(
@@ -279,9 +299,12 @@ private final class NCXParser: NSObject, XMLParserDelegate {
         case "navLabel":  inNavLabel = true
         case "text":      currentText = ""
         case "content":
-            // src may be "chapter1.xhtml" or "OEBPS/chapter1.xhtml#anchor"
+            // src may be "chapter1.xhtml" or "OEBPS/chapter1.xhtml#anchor" — percent-decoded for
+            // the same reason as the OPF manifest hrefs (see `parseOPF`), and so it lines up with
+            // `spine`'s now-decoded entries for the exact-path match below.
             if let src = attributes["src"] {
-                pendingContent = src.components(separatedBy: "#").first ?? src
+                let withoutAnchor = src.components(separatedBy: "#").first ?? src
+                pendingContent = withoutAnchor.removingPercentEncoding ?? withoutAnchor
             }
         default: break
         }
@@ -300,9 +323,17 @@ private final class NCXParser: NSObject, XMLParserDelegate {
         case "navLabel":
             inNavLabel = false
         case "navPoint":
-            // Match content href to the spine to get a page index
-            let lastComponent = (pendingContent as NSString).lastPathComponent
-            let idx = spine.firstIndex { ($0 as NSString).lastPathComponent == lastComponent }
+            // Match content href to the spine to get a page index. Tries the exact relative
+            // path first — a filename-only match (the old sole behavior) misattributes the TOC
+            // entry when two spine files share a filename in different subdirectories (e.g. a
+            // multi-language EPUB with "en/chapter1.xhtml" and "fr/chapter1.xhtml"), always
+            // resolving to whichever is `firstIndex`-matched regardless of which one the NCX
+            // entry actually pointed at. Falling back to filename-only only when no exact path
+            // matches keeps the previous behavior for archives whose NCX `src` is based
+            // differently than the OPF manifest's hrefs (e.g. missing/extra directory prefix).
+            let idx = spine.firstIndex(of: pendingContent) ?? spine.firstIndex {
+                ($0 as NSString).lastPathComponent == (pendingContent as NSString).lastPathComponent
+            }
             if let idx, !pendingTitle.isEmpty {
                 result.append((pendingTitle, idx))
             }

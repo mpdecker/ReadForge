@@ -95,6 +95,8 @@ enum AuthenticationError: LocalizedError, Equatable {
     case weakPassword
     case biometricFailed
     case biometricResetUnsupportedWithMultipleAccounts
+    case reservedEmailAddress
+    case tooManyAttempts
 
     var errorDescription: String? {
         switch self {
@@ -110,6 +112,10 @@ enum AuthenticationError: LocalizedError, Equatable {
             return "Biometric authentication failed"
         case .biometricResetUnsupportedWithMultipleAccounts:
             return "Biometric password reset isn't available with more than one account on this device — Face ID/Touch ID proves you're this device's owner, not which account is yours. Sign in with your current password instead."
+        case .reservedEmailAddress:
+            return "This email address is reserved and can't be used for a password-protected account"
+        case .tooManyAttempts:
+            return "Too many failed sign-in attempts. Please wait a moment before trying again."
         }
     }
 

@@ -57,20 +57,41 @@ struct TextCleanupService: Sendable {
                 counts[line, default: 0] += 1
             }
         }
-        let threshold = max(2, Int(Double(pages.count) * 0.3))
+        // `.rounded(.up)` (ceiling), not `Int(...)` truncation: for e.g. 7 pages, `0.3 * 7 = 2.1`
+        // truncated to `2` meant a line needed to appear on only 2/7 ≈ 28.6% of pages — below
+        // the documented "30%+" rule — to be misclassified as a repeated header/footer and
+        // stripped from every page it appeared on, including any that were legitimate,
+        // non-boilerplate body text.
+        let threshold = max(2, Int((Double(pages.count) * 0.3).rounded(.up)))
         return Set(counts.filter { $0.value >= threshold }.keys)
     }
 
+    /// Removes a detected repeated line only from the leading/trailing window it was actually
+    /// sampled from (`repeatedLines`'s first/last 2 lines per page) — the previous version
+    /// matched and deleted a repeated line anywhere in the page's full text, so a running header
+    /// (e.g. "CHAPTER THREE: THE JOURNEY") that also happened to appear as an ordinary
+    /// mid-chapter line (a reused section-break title, a quoted heading) silently lost that
+    /// legitimate body text too, not just the boilerplate copy.
     private func removingRepeated(from text: String, lines repeated: Set<String>) -> String {
-        text.components(separatedBy: "\n")
-            .filter { !repeated.contains($0.trimmingCharacters(in: .whitespaces)) }
-            .joined(separator: "\n")
+        guard !repeated.isEmpty else { return text }
+        var lines = text.components(separatedBy: "\n")
+        let windowSize = 2
+        let leadingRange = 0..<min(windowSize, lines.count)
+        let trailingRange = max(leadingRange.upperBound, lines.count - windowSize)..<lines.count
+        for range in [leadingRange, trailingRange] {
+            for i in range where repeated.contains(lines[i].trimmingCharacters(in: .whitespaces)) {
+                lines[i] = ""
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func cleanParagraph(_ text: String) -> String {
         var s = text
-        // Fix hyphenated line breaks: "algo-\nrithm" → "algorithm"
-        s = s.replacingOccurrences(of: "-\n", with: "")
+        // Fix hyphenated line breaks: "algo-\nrithm" → "algorithm". A plain "-\n" substring
+        // match missed the common case where PDFKit's extracted justified text has a trailing
+        // space before the line break ("algo- \nrithm") — the regex form matches both.
+        s = s.replacingOccurrences(of: "-[ \t]*\n", with: "", options: .regularExpression)
         // Join soft-wrapped lines within the paragraph
         s = s.replacingOccurrences(of: "\n", with: " ")
         // Remove inline square-bracket citations: [1], [1,2], [1-3]
