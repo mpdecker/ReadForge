@@ -86,4 +86,18 @@ struct ReadForgeTests {
         #expect(record.wordCount == 7)
         #expect(record.estimatedListeningMinutes > 0.0)
     }
+
+    // Regression test: `resolve(SectionDetectionService.self)` (T bound to the protocol itself)
+    // used to always fall through to `default` in `createDefaultInstance`'s switch and throw
+    // `.serviceNotFound` — and unlike the AIModelManaging case, LibraryViewModel calls this
+    // getter with `try await`, not `try?`, so every single document import failed immediately,
+    // before any file was even touched. `sectionDetectionService` now resolves via the concrete
+    // `PDFSectionDetectionService.self` instead.
+    @Test func testSectionDetectionServiceResolves() async throws {
+        let container = ServiceContainer.shared
+        let service = try await container.sectionDetectionService
+        let pages = [PageText(pageNumber: 1, text: "INTRODUCTION\n\nSome body text that is long enough.")]
+        let sections = service.detect(pages: pages, outlineEntries: [], cleanedPages: pages)
+        #expect(!sections.isEmpty)
     }
+}

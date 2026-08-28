@@ -317,11 +317,19 @@ struct SecurityLoggerV2 {
         ReadForgeLogger.debug(category: "Security", message: message)
     }
     
+    // `email` is intentionally not included in the logged reason — `securityValidationFailed`
+    // logs its `reason` string at `.public` privacy (see `Logger.swift`), unlike every other
+    // user-identifying value logged elsewhere in this app (documentId, filePath), which is
+    // always `.private`. Splicing the raw address into a public-privacy string would have
+    // written it unredacted to the unified logging system, visible via Console.app/sysdiagnose
+    // with no special entitlement — directly contradicting this file's own "never logs document
+    // content or user data" contract. Matches `biometricAttempt` below, which already logs no
+    // identifying info for the same reason.
     static func authenticationAttempt(email: String, success: Bool) {
         if success {
-            ReadForgeLogger.securityValidationFailed(component: "Authentication", reason: "Successful login for \(email)")
+            ReadForgeLogger.securityValidationFailed(component: "Authentication", reason: "Successful login")
         } else {
-            ReadForgeLogger.securityValidationFailed(component: "Authentication", reason: "Failed login attempt for \(email)")
+            ReadForgeLogger.securityValidationFailed(component: "Authentication", reason: "Failed login attempt")
         }
     }
     

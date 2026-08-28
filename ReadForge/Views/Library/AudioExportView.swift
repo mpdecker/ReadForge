@@ -45,7 +45,24 @@ struct AudioExportView: View {
             }
             .task { await runExport() }
             .fileMover(
-                isPresented: Binding(get: { exportedURL != nil }, set: { if !$0 { exportedURL = nil } }),
+                isPresented: Binding(
+                    get: { exportedURL != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            // Whether the move succeeded (the file's already gone from this
+                            // path — a harmless no-op here), failed, or the user simply
+                            // cancelled the picker (whose completion handler below isn't called
+                            // at all in that case), the temp export file must never be left
+                            // behind once this sheet closes. Previously only a *successful* move
+                            // cleaned it up, so a cancelled or failed save leaked the full-size
+                            // temp file every time.
+                            if let url = exportedURL {
+                                try? FileManager.default.removeItem(at: url)
+                            }
+                            exportedURL = nil
+                        }
+                    }
+                ),
                 file: exportedURL
             ) { result in
                 if case .failure(let error) = result {
@@ -66,6 +83,10 @@ struct AudioExportView: View {
             isExporting = false
             exportedURL = url
         } catch {
+            // Previously this branch left `isExporting` stuck at `true` forever — the error
+            // alert would show, but underneath it the view kept rendering an indeterminate
+            // "Rendering audio…" progress view with no way back except manually tapping Close.
+            isExporting = false
             errorMessage = error.localizedDescription
         }
     }

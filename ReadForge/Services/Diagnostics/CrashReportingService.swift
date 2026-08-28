@@ -32,6 +32,9 @@ final class CrashReportingService: @unchecked Sendable {
 
     private let logURL: URL
     private let queue = DispatchQueue(label: "app.readforge.crashlog")
+    /// A crash-loop-on-launch would otherwise grow `CrashLog.txt` without bound — this keeps the
+    /// file from becoming an unbounded disk sink, at the cost of losing the oldest entries.
+    private static let maxLogSizeBytes = 512 * 1024
 
     private init() {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -87,20 +90,36 @@ final class CrashReportingService: @unchecked Sendable {
                     try? entry.write(to: logURL, atomically: true, encoding: .utf8)
                 }
             }
+            Self.truncateIfNeeded(at: logURL)
         }
     }
 
+    /// Keeps only the trailing `maxLogSizeBytes` of the log — not entry-boundary-aware, but this
+    /// is a safety net for a runaway crash loop, not a precision archive.
+    private static func truncateIfNeeded(at url: URL) {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int, size > maxLogSizeBytes,
+              let data = try? Data(contentsOf: url)
+        else { return }
+        try? Data(data.suffix(maxLogSizeBytes)).write(to: url, options: .atomic)
+    }
+
     // MARK: - Public read access (for the Settings "Crash Log" screen)
+    //
+    // Routed through the same serial `queue` as `record()`'s writes — previously these read the
+    // file directly, unsynchronized with an in-flight write. Low practical risk (`record()` only
+    // ever fires from the terminal uncaught-exception handler, right before the process exits),
+    // but a real gap, not just style.
 
     func readLog() -> String? {
-        try? String(contentsOf: logURL, encoding: .utf8)
+        queue.sync { try? String(contentsOf: logURL, encoding: .utf8) }
     }
 
     func hasLog() -> Bool {
-        FileManager.default.fileExists(atPath: logURL.path)
+        queue.sync { FileManager.default.fileExists(atPath: logURL.path) }
     }
 
     func clearLog() {
-        try? FileManager.default.removeItem(at: logURL)
+        queue.sync { try? FileManager.default.removeItem(at: logURL) }
     }
 }
