@@ -31,29 +31,36 @@ jobs:
     - name: Resolve Dependencies
       run: |
         xcodebuild -resolvePackageDependencies -project ReadForge.xcodeproj
-        
+
+    - name: Select iOS Simulator
+      run: |
+        UDID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')
+        test -n "$UDID" || { echo "No iPhone simulator available"; xcrun simctl list devices available; exit 1; }
+        echo "Using simulator $UDID"
+        echo "SIM_DEST=id=$UDID" >> "$GITHUB_ENV"
+
     - name: Build Project
       run: |
         xcodebuild -project ReadForge.xcodeproj \
                    -scheme ReadForge \
-                   -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+                   -destination "$SIM_DEST" \
                    clean build
-                   
+
     - name: Run Unit Tests
       run: |
         xcodebuild test \
                    -project ReadForge.xcodeproj \
                    -scheme ReadForge \
-                   -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+                   -destination "$SIM_DEST" \
                    -enableCodeCoverage YES \
                    -resultBundlePath TestResults.xcresult
-                   
+
     - name: Run UI Tests
       run: |
         xcodebuild test \
                    -project ReadForge.xcodeproj \
                    -scheme ReadForge \
-                   -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+                   -destination "$SIM_DEST" \
                    -only-testing:ReadForgeUITests \
                    -resultBundlePath UITestResults.xcresult
                    
@@ -127,13 +134,20 @@ jobs:
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
-        
+
+    - name: Select iOS Simulator
+      run: |
+        UDID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')
+        test -n "$UDID" || { echo "No iPhone simulator available"; xcrun simctl list devices available; exit 1; }
+        echo "Using simulator $UDID"
+        echo "SIM_DEST=id=$UDID" >> "$GITHUB_ENV"
+
     - name: Run Performance Tests
       run: |
         xcodebuild test \
                    -project ReadForge.xcodeproj \
                    -scheme ReadForge \
-                   -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+                   -destination "$SIM_DEST" \
                    -only-testing:ReadForgeTests/DocumentProcessingIntegrationTests/testDocumentImportToProcessingPipeline \
                    -only-testing:ReadForgeTests/DocumentProcessingIntegrationTests/testPDFExtractionService \
                    -resultBundlePath PerformanceResults.xcresult
