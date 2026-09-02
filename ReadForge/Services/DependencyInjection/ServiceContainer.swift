@@ -90,7 +90,7 @@ actor ServiceContainer {
             return DocumentExtractionFactory() as? T
         case is TextCleanupService.Type:
             return TextCleanupService() as? T
-        case is SectionDetectionService.Type:
+        case is PDFSectionDetectionService.Type:
             return PDFSectionDetectionService() as? T
         case is PDFExtractionService.Type:
             return PDFExtractionService() as? T
@@ -160,8 +160,15 @@ extension ServiceContainer {
         get async throws { try await resolve(TextCleanupService.self) }
     }
     
+    // Resolved by the CONCRETE type (`PDFSectionDetectionService`), not the `SectionDetectionService`
+    // protocol — same `switch type { case is ProtocolType.Type }` gotcha documented below on
+    // `aiCleanupService` (never matches when `T` is bound to the protocol itself). This one was
+    // missed when that fix was applied elsewhere: `resolve(SectionDetectionService.self)` always
+    // threw `.serviceNotFound`, and `LibraryViewModel.importAndProcess` calls this getter with
+    // `try await` (not `try?`), so the `do` block's `catch` fired immediately on every single
+    // import — every PDF/EPUB/text import failed before any file was even touched.
     var sectionDetectionService: SectionDetectionService {
-        get async throws { try await resolve(SectionDetectionService.self) }
+        get async throws { try await resolve(PDFSectionDetectionService.self) }
     }
 
     // Resolved by the CONCRETE type (`TieredTextCleanupService`), not the `AIModelManaging`

@@ -10,7 +10,14 @@ import OSLog
 
 /// Privacy-first structured logging for ReadForge
 /// Never logs document content or user data
-enum ReadForgeLogger {
+///
+/// `nonisolated` (overriding this module's default MainActor isolation): every member here is a
+/// stateless call into an `os.Logger` instance, which is `Sendable`/thread-safe by design — this
+/// type has no actor affinity of its own. Without this, calling e.g. `ReadForgeLogger.error(...)`
+/// from a `nonisolated` background context (PDF extraction, OCR, any other off-main service) is
+/// a compile-time warning today ("call to main actor-isolated static method... in a synchronous
+/// nonisolated context") and a real actor-isolation violation, not just style.
+nonisolated enum ReadForgeLogger {
     private static let subsystem = "com.readforge.app"
     
     // MARK: - Log Categories

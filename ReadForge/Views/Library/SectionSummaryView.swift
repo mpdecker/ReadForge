@@ -95,17 +95,19 @@ struct SectionSummaryView: View {
     private func generateSummary() async {
         isLoading = true
         let text = section.cleanText ?? section.rawText
-        let result: Result<String, Error> = await Task.detached(priority: .userInitiated) {
-            do {
-                return .success(try await TieredSummarizationService().summarize(text))
-            } catch {
-                return .failure(error)
-            }
-        }.value
-
-        switch result {
-        case .success(let text): summary = text
-        case .failure(let error): errorMessage = error.localizedDescription
+        do {
+            // Calling directly, not wrapping in `Task.detached` — a detached task has no
+            // cancellation relationship to the `.task` modifier that calls this function, so
+            // SwiftUI cancelling that task when the user navigates away previously had no effect
+            // here: summarization kept running to completion in the background regardless, then
+            // tried to write into `@State` on a view instance no longer in the hierarchy.
+            let result = try await TieredSummarizationService().summarize(text)
+            try Task.checkCancellation()
+            summary = result
+        } catch is CancellationError {
+            return // view is gone; nothing to update
+        } catch {
+            errorMessage = error.localizedDescription
         }
         isLoading = false
     }

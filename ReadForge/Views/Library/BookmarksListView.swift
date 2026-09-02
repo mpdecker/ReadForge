@@ -84,8 +84,15 @@ struct BookmarksListView: View {
     }
 
     private func delete(at offsets: IndexSet) {
+        // `bookmarks` re-sorts `document.bookmarks` fresh on every access, but `offsets` is
+        // computed once against the pre-delete ordering. Looking it up again inside the loop
+        // after each deletion has already shrunk `document.bookmarks` let a multi-row delete
+        // (List Edit mode → select 2+ rows → Delete, delivered as one IndexSet) index past the
+        // end of the now-shorter array — a crash — or silently delete the wrong bookmark once
+        // indices no longer lined up. Snapshotting once before the loop fixes both.
+        let snapshot = bookmarks
         for index in offsets {
-            let bookmark = bookmarks[index]
+            let bookmark = snapshot[index]
             document.bookmarks.removeAll { $0.id == bookmark.id }
             modelContext.delete(bookmark)
         }

@@ -40,9 +40,29 @@ struct AudioExportService {
             .appendingPathComponent("ReadForge-Export-\(UUID().uuidString).wav")
 
         let holder = AudioFileHolder()
-        for (index, sentence) in allSentences.enumerated() {
-            try await Self.speakAndAppend(sentence, voiceId: voiceId, rate: rate, destination: destination, holder: holder)
-            progress?(index + 1, allSentences.count)
+        // One synthesizer reused across every sentence, not a fresh `AVSpeechSynthesizer` per
+        // sentence — a full-length book means potentially thousands of sentences, so thousands
+        // of sequential allocations/teardowns for no benefit (each utterance is still driven to
+        // completion, one at a time, before the next begins).
+        let synthesizer = AVSpeechSynthesizer()
+        do {
+            for (index, sentence) in allSentences.enumerated() {
+                // Previously nothing in this loop ever checked for cancellation — swiping away
+                // the export sheet cancelled the SwiftUI `.task` that called `export`, but that
+                // had no effect here: synthesis kept running to completion in the background with
+                // nothing observing it, burning CPU/battery, and its finished file was never
+                // referenced or cleaned up by the now-gone view.
+                try Task.checkCancellation()
+                try await Self.speakAndAppend(
+                    sentence, voiceId: voiceId, rate: rate, destination: destination,
+                    holder: holder, synthesizer: synthesizer
+                )
+                progress?(index + 1, allSentences.count)
+            }
+        } catch {
+            // A cancelled or failed export shouldn't leave a partial file behind on disk.
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         }
         return destination
     }
@@ -62,12 +82,12 @@ struct AudioExportService {
     /// pattern as `AudioCacheService.write` — see that type's doc comment for why `resumed`
     /// guards against double-resuming the continuation.
     private static func speakAndAppend(
-        _ text: String, voiceId: String?, rate: Float, destination: URL, holder: AudioFileHolder
+        _ text: String, voiceId: String?, rate: Float, destination: URL,
+        holder: AudioFileHolder, synthesizer: AVSpeechSynthesizer
     ) async throws {
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = rate
         utterance.voice = voiceId.flatMap { AVSpeechSynthesisVoice(identifier: $0) } ?? AVSpeechSynthesisVoice(language: "en-US")
-        let synthesizer = AVSpeechSynthesizer()
 
         final class State: @unchecked Sendable {
             var resumed = false
