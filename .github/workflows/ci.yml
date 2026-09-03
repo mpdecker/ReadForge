@@ -192,10 +192,11 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # Pinned to a release tag. '@master' meant every run pulled whatever was on the action's
-    # default branch at that moment — an unreviewed third-party action running against the repo.
+    # Pinned to an immutable commit SHA. '@master' meant every run pulled whatever was on the
+    # action's default branch at that moment — an unreviewed third-party action running against
+    # the repo. A tag alone is only slightly better, since a tag can be moved.
     - name: Run Trivy Vulnerability Scanner
-      uses: aquasecurity/trivy-action@0.28.0
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: 'fs'
         scan-ref: '.'
