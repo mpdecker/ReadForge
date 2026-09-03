@@ -2,6 +2,11 @@ import SwiftUI
 import SwiftData
 
 struct LibraryView: View {
+    /// The toolbar's import action. Distinct from the empty state's
+    /// ``LibraryEmptyStateView/importButtonIdentifier`` because both are on screen at once when
+    /// the library is empty — a shared identifier makes the query ambiguous.
+    static let importButtonIdentifier = "ImportDocumentToolbar"
+
     @Query(sort: \DocumentRecord.importedAt, order: .reverse) private var documents: [DocumentRecord]
     @Environment(\.modelContext) private var modelContext
     @State private var viewModel = LibraryViewModel()
@@ -25,6 +30,7 @@ struct LibraryView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Import", systemImage: "plus") { viewModel.showImporter = true }
+                        .accessibilityIdentifier(LibraryView.importButtonIdentifier)
                 }
             }
             .navigationDestination(for: DocumentRecord.self) { doc in

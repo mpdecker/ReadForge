@@ -3,34 +3,56 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**/*.md'
+      - 'android/**'
   pull_request:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**/*.md'
+      - 'android/**'
+
+# macOS runners bill at 10x the Linux rate, so a superseded run is expensive to leave
+# running. Pushing twice in a minute now cancels the first run instead of paying for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PROJECT: ReadForge.xcodeproj
+  SCHEME: ReadForge
 
 jobs:
+  # One macOS job builds the test bundle once and reuses it for every test pass. Previously the
+  # unit-test step ran the *whole* scheme (unit + UI), a second step then re-ran the UI tests,
+  # and a third macOS runner rebuilt from scratch for two performance tests.
   test:
-    name: Run Tests
+    name: Build and Test
     runs-on: macos-latest
-    
+    timeout-minutes: 45
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
-      
+
     - name: Setup Xcode
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
-        
-    - name: Cache Derived Data
+
+    # Caches only the package checkouts, keyed on the resolved-package file. The old cache
+    # keyed DerivedData on '**/*.swift', so the key changed on every source edit and never hit;
+    # restoring a stale DerivedData across Xcode versions also causes more rebuilds than it
+    # saves. Path matches the explicit -derivedDataPath used by the build steps below.
+    - name: Cache Swift Packages
       uses: actions/cache@v4
       with:
-        path: ~/Library/Developer/Xcode/DerivedData
-        key: ${{ runner.os }}-derived-data-${{ hashFiles('**/*.swift') }}
-        restore-keys: |
-          ${{ runner.os }}-derived-data-
-          
-    - name: Resolve Dependencies
-      run: |
-        xcodebuild -resolvePackageDependencies -project ReadForge.xcodeproj
+        path: DerivedData/SourcePackages
+        key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+        restore-keys: ${{ runner.os }}-spm-
 
     - name: Select iOS Simulator
       run: |
@@ -39,216 +61,240 @@ jobs:
         echo "Using simulator $UDID"
         echo "SIM_DEST=id=$UDID" >> "$GITHUB_ENV"
 
-    - name: Build Project
+    - name: Build for Testing
       run: |
-        xcodebuild -project ReadForge.xcodeproj \
-                   -scheme ReadForge \
+        xcodebuild build-for-testing \
+                   -project "$PROJECT" \
+                   -scheme "$SCHEME" \
                    -destination "$SIM_DEST" \
-                   clean build
+                   -derivedDataPath DerivedData \
+                   -enableCodeCoverage YES
 
     - name: Run Unit Tests
       run: |
-        xcodebuild test \
-                   -project ReadForge.xcodeproj \
-                   -scheme ReadForge \
+        xcodebuild test-without-building \
+                   -project "$PROJECT" \
+                   -scheme "$SCHEME" \
                    -destination "$SIM_DEST" \
+                   -derivedDataPath DerivedData \
                    -enableCodeCoverage YES \
+                   -only-testing:ReadForgeTests \
                    -resultBundlePath TestResults.xcresult
 
+    # Separate step so a UI-test failure is distinguishable at a glance from a unit-test one,
+    # and so the (slower, flakier) UI pass cannot mask a unit regression.
+    #
+    # Parallel testing is off: XCUITest clones the simulator per worker, and several booted
+    # clones each driving their own copy of the app starve a shared runner badly enough that
+    # element queries time out — which showed up as tests failing in an interleaved, irre-
+    # producible pattern rather than as a real regression.
     - name: Run UI Tests
       run: |
-        xcodebuild test \
-                   -project ReadForge.xcodeproj \
-                   -scheme ReadForge \
+        xcodebuild test-without-building \
+                   -project "$PROJECT" \
+                   -scheme "$SCHEME" \
                    -destination "$SIM_DEST" \
+                   -derivedDataPath DerivedData \
                    -only-testing:ReadForgeUITests \
+                   -parallel-testing-enabled NO \
                    -resultBundlePath UITestResults.xcresult
-                   
+
     - name: Generate Code Coverage Report
-      run: |
-        xcrun xccov view --report --json TestResults.xcresult > coverage.json
-        
+      if: success()
+      run: xcrun xccov view --report --json TestResults.xcresult > coverage.json
+
+    # Only on failure: a green run's bundles are rarely opened and each is tens of MB against
+    # the account's storage quota.
     - name: Upload Test Results
       uses: actions/upload-artifact@v4
-      if: always()
+      if: failure()
       with:
         name: test-results
         path: |
           TestResults.xcresult
           UITestResults.xcresult
-          coverage.json
-          
+        retention-days: 7
+
+    - name: Upload Coverage Report
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: coverage
+        path: coverage.json
+        retention-days: 7
+
+  coverage-comment:
+    name: Comment Coverage on PR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+
+    steps:
+    - name: Download Coverage Report
+      uses: actions/download-artifact@v4
+      with:
+        name: coverage
+
     - name: Comment Coverage on PR
-      if: github.event_name == 'pull_request'
       uses: actions/github-script@v7
       with:
         script: |
           const fs = require('fs');
+          let body;
           try {
             const coverage = JSON.parse(fs.readFileSync('coverage.json', 'utf8'));
-            const totalCoverage = coverage.targets[0]?.lineCoverage || 0;
-            
-            const comment = `## 📊 Code Coverage Report\n\n**Line Coverage: ${(totalCoverage * 100).toFixed(1)}%**\n\n${totalCoverage >= 0.8 ? '✅ Coverage is above 80%' : '⚠️ Coverage is below 80%'}`;
-            
-            github.rest.issues.createComment({
+            // Pick the app target by name. `targets[0]` was whichever target xccov happened to
+            // list first, which is often a test bundle — and a test bundle's own coverage is
+            // near 100%, so the reported number was meaningless.
+            const target = coverage.targets.find(t => t.name === 'ReadForge.app')
+              || coverage.targets.find(t => t.name.startsWith('ReadForge') && !t.name.includes('Tests'))
+              || coverage.targets[0];
+            const pct = (target.lineCoverage * 100).toFixed(1);
+            body = `## 📊 Code Coverage Report\n\n**Line Coverage (${target.name}): ${pct}%**\n\n`
+              + (target.lineCoverage >= 0.8 ? '✅ Coverage is above 80%' : '⚠️ Coverage is below 80%');
+          } catch (error) {
+            core.warning(`Could not parse coverage report: ${error}`);
+            return;
+          }
+
+          // Update this run's existing comment rather than adding one per push.
+          const marker = '## 📊 Code Coverage Report';
+          const { data: comments } = await github.rest.issues.listComments({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+          const existing = comments.find(c => c.user.type === 'Bot' && c.body.startsWith(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body,
+            });
+          } else {
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: comment
+              body,
             });
-          } catch (error) {
-            console.log('Could not parse coverage report:', error);
           }
 
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: read
+      security-events: write
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
-      
+
+    # Pinned to a release tag. '@master' meant every run pulled whatever was on the action's
+    # default branch at that moment — an unreviewed third-party action running against the repo.
     - name: Run Trivy Vulnerability Scanner
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@0.28.0
       with:
         scan-type: 'fs'
         scan-ref: '.'
         format: 'sarif'
         output: 'trivy-results.sarif'
-        
+
     - name: Upload Trivy Results
       uses: github/codeql-action/upload-sarif@v3
       if: always()
       with:
         sarif_file: 'trivy-results.sarif'
 
-  performance-test:
-    name: Performance Tests
-    runs-on: macos-latest
-    
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      
-    - name: Setup Xcode
-      uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: latest-stable
-
-    - name: Select iOS Simulator
-      run: |
-        UDID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')
-        test -n "$UDID" || { echo "No iPhone simulator available"; xcrun simctl list devices available; exit 1; }
-        echo "Using simulator $UDID"
-        echo "SIM_DEST=id=$UDID" >> "$GITHUB_ENV"
-
-    - name: Run Performance Tests
-      run: |
-        xcodebuild test \
-                   -project ReadForge.xcodeproj \
-                   -scheme ReadForge \
-                   -destination "$SIM_DEST" \
-                   -only-testing:ReadForgeTests/DocumentProcessingIntegrationTests/testDocumentImportToProcessingPipeline \
-                   -only-testing:ReadForgeTests/DocumentProcessingIntegrationTests/testPDFExtractionService \
-                   -resultBundlePath PerformanceResults.xcresult
-                   
-    - name: Upload Performance Results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: performance-results
-        path: PerformanceResults.xcresult
-
   build-archive:
     name: Build and Archive
     runs-on: macos-latest
     needs: [test, security-scan]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
+    timeout-minutes: 45
+    # Gated on the signing certificate actually being configured. Without it the archive step
+    # fails on every push to main, which is noise rather than signal.
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event_name == 'push'
+      && vars.ENABLE_ARCHIVE == 'true'
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
-      
+
     - name: Setup Xcode
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
-        
+
     - name: Import Code-Signing Certificates
-      if: github.event_name != 'pull_request'
       env:
         BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
         P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
         BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
         KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
       run: |
-        # Create variables
         CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
         PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
         KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-        
-        # Import certificate
-        echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output $CERTIFICATE_PATH
+
+        echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
         security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
         security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
         security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
         security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
         security list-keychain -d user -s $KEYCHAIN_PATH
-        
-        # Import provisioning profile
-        echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode --output $PP_PATH
+
+        echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
         mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
         cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
-        
+
     - name: Build Archive
       run: |
         xcodebuild archive \
-                   -project ReadForge.xcodeproj \
-                   -scheme ReadForge \
+                   -project "$PROJECT" \
+                   -scheme "$SCHEME" \
                    -configuration Release \
-                   -archivePath $RUNNER_TEMP/ReadForge.xcarchive \
-                   -destination generic/platform=iOS \
-                   CODE_SIGN_STYLE=Manual \
-                   PROVISIONING_PROFILE_SPECIFIER="" \
-                   CODE_SIGN_IDENTITY=""
-                   
+                   -archivePath "$RUNNER_TEMP/ReadForge.xcarchive" \
+                   -destination generic/platform=iOS
+
     - name: Export Archive
       run: |
         xcodebuild -exportArchive \
-                   -archivePath $RUNNER_TEMP/ReadForge.xcarchive \
+                   -archivePath "$RUNNER_TEMP/ReadForge.xcarchive" \
                    -exportOptionsPlist ExportOptions.plist \
-                   -exportPath $RUNNER_TEMP/build
-                   
+                   -exportPath "$RUNNER_TEMP/build"
+
+    # `path` was previously the literal string '$RUNNER_TEMP/build' — upload-artifact does not
+    # expand shell variables, so it never matched anything.
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
         name: ReadForge-iOS
-        path: $RUNNER_TEMP/build
+        path: ${{ runner.temp }}/build
         retention-days: 30
 
   notify:
     name: Notify Results
     runs-on: ubuntu-latest
-    needs: [test, security-scan, performance-test]
-    if: always()
-    
+    needs: [test, security-scan]
+    # Opt-in: the previous version ran unconditionally and failed on every single run, because
+    # `SLACK_WEBHOOK` is not configured. Set the `ENABLE_SLACK` repository variable to 'true'
+    # once the webhook secret exists. (`secrets` is not available in a job-level `if`, so the
+    # switch has to be a variable.)
+    if: always() && vars.ENABLE_SLACK == 'true'
+
     steps:
-    - name: Notify Slack on Success
-      if: needs.test.result == 'success' && needs.security-scan.result == 'success'
+    - name: Notify Slack
       uses: 8398a7/action-slack@v3
       with:
-        status: success
+        status: ${{ (needs.test.result == 'success' && needs.security-scan.result == 'success') && 'success' || 'failure' }}
         channel: '#ci-cd'
-        text: '✅ ReadForge CI/CD Pipeline completed successfully!'
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
-        
-    - name: Notify Slack on Failure
-      if: needs.test.result == 'failure' || needs.security-scan.result == 'failure'
-      uses: 8398a7/action-slack@v3
-      with:
-        status: failure
-        channel: '#ci-cd'
-        text: '❌ ReadForge CI/CD Pipeline failed!'
+        text: >-
+          ${{ (needs.test.result == 'success' && needs.security-scan.result == 'success')
+          && '✅ ReadForge CI/CD Pipeline completed successfully!'
+          || '❌ ReadForge CI/CD Pipeline failed!' }}
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
