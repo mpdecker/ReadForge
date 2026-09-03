@@ -1,6 +1,10 @@
 import SwiftUI
 
 struct LibraryEmptyStateView: View {
+    /// The empty state's own import call to action, distinct from the toolbar's
+    /// ``LibraryView/importButtonIdentifier`` since both are on screen together here.
+    static let importButtonIdentifier = "ImportDocumentEmptyState"
+
     let onImport: () -> Void
 
     var body: some View {
@@ -14,6 +18,7 @@ struct LibraryEmptyStateView: View {
                 .foregroundStyle(.secondary)
             Button("Import PDF", action: onImport)
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier(Self.importButtonIdentifier)
         }
         .padding()
     }

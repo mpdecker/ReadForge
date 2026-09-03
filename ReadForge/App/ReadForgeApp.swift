@@ -19,13 +19,26 @@ struct ReadForgeApp: App {
         let container: ModelContainer
         do {
             container = try ModelContainer(
-                for: DocumentRecord.self, SectionRecord.self, BookmarkRecord.self, PlaybackState.self, User.self
+                for: DocumentRecord.self, SectionRecord.self, BookmarkRecord.self, PlaybackState.self, User.self,
+                configurations: ModelConfiguration(
+                    isStoredInMemoryOnly: UITestSupport.isEnabled(UITestSupport.inMemoryStoreArgument)
+                )
             )
         } catch {
             fatalError("Failed to create ModelContainer: \(error)")
         }
         modelContainer = container
-        _authService = StateObject(wrappedValue: AuthenticationService(modelContext: container.mainContext))
+
+        let auth = AuthenticationService(modelContext: container.mainContext)
+        #if DEBUG
+        if UITestSupport.isEnabled(UITestSupport.seedLibraryArgument) {
+            UITestSupport.seedLibrary(in: container.mainContext)
+        }
+        if UITestSupport.isEnabled(UITestSupport.bypassAuthArgument) {
+            auth.signInForUITesting(as: UITestSupport.makeTestUser(in: container.mainContext))
+        }
+        #endif
+        _authService = StateObject(wrappedValue: auth)
     }
 
     var body: some Scene {

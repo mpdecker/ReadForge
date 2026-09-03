@@ -91,6 +91,17 @@ final class AuthenticationService: ObservableObject {
         authenticationState = .unauthenticated
     }
 
+    #if DEBUG
+    /// Marks the session authenticated without any credential check, for XCUITests that need to
+    /// exercise the screens behind the sign-in gate. `authenticationState` is `private(set)`, so
+    /// this is the only way in — and it exists solely in debug builds, gated further behind a
+    /// launch argument (see `UITestSupport.bypassAuthArgument`).
+    func signInForUITesting(as user: User) {
+        currentUser = user
+        authenticationState = .authenticated(user)
+    }
+    #endif
+
     func register(
         email: String,
         password: String,

@@ -39,29 +39,38 @@ struct PlayerControlsView: View {
         .padding(.horizontal)
     }
     
+    // Every control below is icon-only, so each needs an explicit label: SF Symbol images carry
+    // no accessible name of their own, which left VoiceOver announcing these as an unlabelled
+    // "button" and made them unaddressable from UI tests.
     private var transportControls: some View {
         HStack(spacing: 44) {
             Button { viewModel.skipBack() } label: {
                 Image(systemName: "gobackward.15").font(.title)
             }
             .disabled(!viewModel.canSkipBack)
-            
+            .accessibilityLabel("Skip Back")
+            .accessibilityHint("Goes back fifteen seconds")
+
             playPauseButton
-            
+
             Button { viewModel.skipForward() } label: {
                 Image(systemName: "goforward.15").font(.title)
             }
+            .accessibilityLabel("Skip Forward")
+            .accessibilityHint("Goes forward fifteen seconds")
         }
     }
-    
+
     private var playPauseButton: some View {
-        Button {
+        let isPlaying = viewModel.playbackState == .playing
+        return Button {
             viewModel.togglePlayPause()
         } label: {
-            Image(systemName: viewModel.playbackState == .playing ? "pause.circle.fill" : "play.circle.fill")
+            Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                 .font(.system(size: 68))
                 .foregroundStyle(.tint)
         }
+        .accessibilityLabel(isPlaying ? "Pause" : "Play")
     }
     
     private var progressLabel: some View {
